@@ -159,9 +159,9 @@ body {
 
 .fallback-badge {
     font-size: 0.6rem;
-    background: #f1c40f;
-    color: #2d3436;
-    border: 2px solid #2d3436;
+    background: #6c5ce7;
+    color: #ffffff;
+    border: 2px solid #5a4bd1;
     border-radius: 6px;
     padding: 1px 6px;
     margin-left: 6px;
@@ -234,7 +234,7 @@ def bed_card(patient_id, urgency, bp, spo2, hr=0.0, gcs=0.0, lactate=0.0, reason
                                       "fontStyle": "italic", "marginTop": "6px", "display": "block"}),
         ]
         if is_fallback:
-            reason_bits.append(html.Span(" GREEDY PLACED", className="fallback-badge"))
+            reason_bits.append(html.Span(" ⚛ QSVM-RANKED", className="fallback-badge"))
         children.append(html.Div(reason_bits))
 
     return html.Div(children, className=f"bed-card {pulse_class} {new_class}")
@@ -1263,6 +1263,7 @@ def update_ui(data):
                     w["patient_id"], w["urgency"], i + 1,
                     displaced=w.get("displaced", False),
                     displaced_by_urgency=w.get("displaced_by_urgency"),
+                    displaced_by_patient_id=w.get("displaced_by_patient_id"),
                 ), width=4)
                 for i, w in enumerate(waitlist)
             ]),

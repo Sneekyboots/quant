@@ -26,7 +26,7 @@ RESOURCE_NAMES = {
 }
 
 RESOURCE_WEIGHTS  = [2.5, 2.0, 0.7]   # clinical utility per resource tier
-RESOURCE_CAPACITY = [2, 2, 5]   # realistic hospital capacity: ICU / Vent / General
+RESOURCE_CAPACITY = [150, 100, 1500]   # realistic hospital capacity: ICU / Vent / General
 
 # ── Staff model constants ─────────────────────────────────────────────────────
 

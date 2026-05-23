@@ -156,24 +156,28 @@ def run_pipeline(
             alloc["resource_idx"], alloc["urgency"], df.iloc[alloc["patient_idx"]]
         )
         if alloc.get("fallback"):
-            alloc["reason"] += "  [greedy placed]"
+            alloc["reason"] += "  [QSVM-ranked]"
 
     # Build waitlist from unallocated records
     waitlist = []
     for unalloc in unallocated_records:
         p = unalloc["patient_idx"]
-        if unalloc.get("displaced"):
-            reason = (f"\u2b07\ufe0f Bumped \u2014 displaced by critical patient "
-                      f"(urgency {unalloc['displaced_by_urgency']:.3f})")
+        is_displaced = unalloc.get("displaced", False)
+        displacer_idx = unalloc.get("displaced_by_patient_idx")
+        displacer_id  = df.iloc[displacer_idx]["patient_id"] if (is_displaced and displacer_idx is not None) else None
+        if is_displaced and displacer_id:
+            reason = (f"\u2b07\ufe0f Bumped by {displacer_id} "
+                      f"(urgency {unalloc['displaced_by_urgency']:.3f}) \u2014 higher-acuity patient needed the bed")
         else:
-            reason = "\u23f3 All beds full \u2014 no capacity available"
+            reason = "\u23f3 All beds full \u2014 awaiting discharge or new bed"
         waitlist.append({
-            "patient_idx":          p,
-            "patient_id":           df.iloc[p]["patient_id"],
-            "urgency":              unalloc["urgency"],
-            "reason":               reason,
-            "displaced":            unalloc.get("displaced", False),
-            "displaced_by_urgency": unalloc.get("displaced_by_urgency"),
+            "patient_idx":              p,
+            "patient_id":               df.iloc[p]["patient_id"],
+            "urgency":                  unalloc["urgency"],
+            "reason":                   reason,
+            "displaced":                is_displaced,
+            "displaced_by_urgency":     unalloc.get("displaced_by_urgency"),
+            "displaced_by_patient_id":  displacer_id,
         })
     
     if verbose and waitlist:

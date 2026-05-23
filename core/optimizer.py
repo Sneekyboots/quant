@@ -267,10 +267,11 @@ def fill_unallocated(
                 assigned = True
 
                 waitlist_entries.append({
-                    "patient_idx":          bumped_p,
-                    "urgency":              bumped_u,
-                    "displaced":            True,
-                    "displaced_by_urgency": round(u, 4),
+                    "patient_idx":             bumped_p,
+                    "urgency":                 bumped_u,
+                    "displaced":               True,
+                    "displaced_by_urgency":    round(u, 4),
+                    "displaced_by_patient_idx": p,
                 })
 
         if not assigned:
