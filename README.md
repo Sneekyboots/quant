@@ -3,17 +3,6 @@
 
 A high-fidelity implementation of a Quantum Support Vector Machine (QSVM) and Quadratic Unconstrained Binary Optimization (QUBO) system designed to solve the "Sudden Surge" problem in hospital bed allocation.
 
----
-
-## 🎨 Visual Redesign: "The Beige & Fun" UI
-We've pivoted away from boring "Dark Mode" dashboards to a **Neo-brutalist / Beige / Fun** aesthetic. The Hospital Command Center now feels like a modern, interactive workstation rather than a technical terminal.
-
-- **Warm Beige Tones:** Soft `#fdfaf5` backgrounds to reduce eye strain for medical staff.
-- **Neo-brutalist Style:** Thick ink borders, hard-drop shadows, and bold rounded typography (**Fredoka**).
-- **Interactive Feedback:** "Squishy" buttons and bouncing "Crisis Alerts" for high-urgency patients.
-
----
-
 ## 🚀 Quick Start (Automated)
 
 We've automated the dual-dashboard startup. You no longer need to manage multiple terminals.
