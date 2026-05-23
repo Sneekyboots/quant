@@ -17,7 +17,7 @@ import pandas as pd
 import numpy as np
 
 from pipeline import run_pipeline
-from data.generator import RESOURCE_CAPACITY
+from data.generator import RESOURCE_CAPACITY, STAFF_ROLES
 
 # ── Custom CSS & Theme ────────────────────────────────────────────────────────
 
@@ -121,6 +121,20 @@ body {
     from { transform: rotate(-1deg) scale(1); }
     to { transform: rotate(1deg) scale(1.02); }
 }
+
+.staff-chip {
+    border-radius: 10px;
+    padding: 6px 10px;
+    margin-bottom: 6px;
+    border: 2px solid #2d3436;
+    box-shadow: 3px 3px 0px #2d3436;
+    font-size: 0.78rem;
+    background: white;
+}
+
+.fatigue-high  { border-left: 6px solid #ff6b6b !important; }
+.fatigue-mid   { border-left: 6px solid #f1c40f !important; }
+.fatigue-low   { border-left: 6px solid #1abc9c !important; }
 """
 
 # ── UI Helpers ────────────────────────────────────────────────────────────────
@@ -205,6 +219,61 @@ def resource_column(title, icon, color, capacity, assigned, df):
             "borderRadius": "0 0 14px 14px",
             "padding": "18px",
             "boxShadow": "6px 6px 0px rgba(0,0,0,0.05)"
+        }),
+    ], width=4)
+
+
+def staff_chip(staff_id, role_name, skill, fatigue):
+    """A compact staff card showing fatigue level via a colour-coded left border."""
+    if fatigue >= 0.7:
+        fatigue_cls = "fatigue-high"
+        fatigue_label = "TIRED"
+    elif fatigue >= 0.4:
+        fatigue_cls = "fatigue-mid"
+        fatigue_label = "OK"
+    else:
+        fatigue_cls = "fatigue-low"
+        fatigue_label = "FRESH"
+
+    return html.Div([
+        html.Div([
+            html.Span(staff_id, style={"fontWeight": "700", "fontFamily": "JetBrains Mono", "fontSize": "0.8rem"}),
+            html.Span(fatigue_label, style={
+                "fontSize": "0.6rem", "fontWeight": "700", "marginLeft": "6px",
+                "color": "#ff6b6b" if fatigue >= 0.7 else "#f1c40f" if fatigue >= 0.4 else "#1abc9c"
+            }),
+        ], className="d-flex align-items-center"),
+        html.Small(role_name, style={"color": "#636e72", "display": "block", "fontWeight": "600"}),
+        html.Small(f"Skill {skill:.2f} · Fatigue {fatigue:.2f}",
+                   style={"color": "#b2bec3", "display": "block", "fontSize": "0.65rem"}),
+    ], className=f"staff-chip {fatigue_cls}")
+
+
+def staff_ward_column(title, icon, ward_name, ward_assignments, df_staff):
+    """One column in the staff grid — all staff assigned to a particular ward."""
+    chips = []
+    if not ward_assignments:
+        chips.append(html.Div("No staff assigned",
+                              style={"color": "#b2bec3", "fontSize": "0.8rem", "fontWeight": "600",
+                                     "padding": "20px", "textAlign": "center"}))
+    else:
+        for a in ward_assignments:
+            chips.append(staff_chip(a["staff_id"], a["role_name"], a["skill_level"], a["fatigue_score"]))
+
+    return dbc.Col([
+        html.Div([
+            html.Span(icon, style={"fontSize": "1.2rem", "marginRight": "8px"}),
+            html.Span(title, style={"fontWeight": "700", "color": "white", "fontSize": "0.95rem"}),
+            dbc.Badge(f"{len(ward_assignments)} assigned", color="light", text_color="dark",
+                      style={"borderRadius": "8px", "fontWeight": "700", "marginLeft": "auto"}),
+        ], style={
+            "background": "#2d3436", "border": "3px solid #2d3436",
+            "borderRadius": "14px 14px 0 0", "padding": "12px 18px",
+            "display": "flex", "alignItems": "center",
+        }),
+        html.Div(chips, style={
+            "background": "white", "border": "3px solid #2d3436", "borderTop": "none",
+            "borderRadius": "0 0 14px 14px", "padding": "14px",
         }),
     ], width=4)
 
@@ -393,8 +462,9 @@ app.layout = html.Div([
                             dbc.Col([
                                 html.Label("👤  PATIENT INTAKE",
                                            style={"color": "#2d3436", "fontSize": "0.85rem", "fontWeight": "700"}),
-                                dcc.Slider(id="patients-slider", min=4, max=12, step=2, value=8,
-                                           marks={4: "4", 8: "8", 12: "MAX"},
+                                dcc.Slider(id="patients-slider", min=4, max=20, step=2, value=16,
+                                           marks={4: "4", 8: "8", 12: "12", 16: "16", 20: "MAX"},
+
                                            className="mt-2"),
                             ], width=4),
                             dbc.Col([
@@ -434,6 +504,18 @@ app.layout = html.Div([
                 style={"color": "#636e72", "fontWeight": "700", "fontSize": "0.85rem"}),
         html.Div(id="security-panel"),
 
+        html.Hr(style={"borderColor": "#2d3436", "borderWidth": "3px", "margin": "30px 0"}),
+
+        # ── Staff grid ──────────────────────────────────────────────────
+        html.H6("👨‍⚕️ STAFF DEPLOYMENT — STAGE 2 QUBO",
+                style={"color": "#636e72", "fontSize": "0.85rem", "fontWeight": "700", "marginBottom": "1rem"}),
+        dcc.Loading(
+            id="loading-staff",
+            type="cube",
+            color="#1abc9c",
+            children=html.Div(id="staff-grid"),
+        ),
+
         html.Div(style={"height": "60px"}),
 
     ], fluid=True),
@@ -452,6 +534,7 @@ app.layout = html.Div([
 )
 def run_and_store(_, aqi, n_patients):
     results = run_pipeline(aqi_level=float(aqi), n_patients=int(n_patients), verbose=False)
+    staff_df = results["staff_df"]
     return {
         "df":               results["df"].to_json(orient="split"),
         "q_alloc":          results["quantum_allocation"],
@@ -466,6 +549,12 @@ def run_and_store(_, aqi, n_patients):
         "audit_hash":       results["audit_hash"],
         "aqi":              aqi,
         "n_patients":       n_patients,
+        # Stage 2 staff
+        "staff_df":         staff_df.to_json(orient="split"),
+        "staff_allocation": results["staff_allocation"],
+        "staff_metrics":    results["staff_metrics"],
+        "stage1_solve_ms":  results["stage1_solve_ms"],
+        "stage2_solve_ms":  results["stage2_solve_ms"],
     }
 
 
@@ -474,6 +563,7 @@ def run_and_store(_, aqi, n_patients):
     Output("bed-grid", "children"),
     Output("patient-table", "children"),
     Output("security-panel", "children"),
+    Output("staff-grid", "children"),
     Output("last-update", "children"),
     Input("pipeline-store", "data"),
 )
@@ -485,23 +575,26 @@ def update_ui(data):
         ], color="warning", className="text-center py-5", style={
             "border": "3px solid #2d3436", "borderRadius": "16px", "boxShadow": "8px 8px 0px #2d3436"
         })
-        return [], placeholder, [], [], ""
+        return [], placeholder, [], [], [], ""
 
     df       = pd.read_json(io.StringIO(data["df"]), orient="split")
     q_alloc  = data["q_alloc"]
     sec      = data["security"]
     aqi      = data["aqi"]
     n        = data["n_patients"]
+    sm       = data.get("staff_metrics", {})
+    s_alloc  = data.get("staff_allocation", [])
 
     # ── Metric cards ─────────────────────────────────────────────────────
     urgencies = [a["urgency"] for a in q_alloc]
     n_critical = sum(1 for u in urgencies if u >= 0.7)
-    
+    sam_score  = sm.get("skill_acuity_match", 0)
+
     cards = [
         metric_card("Live Queue", f"{n:02d}", "Patients being triaged", "#2d3436", "👤"),
         metric_card("Crisis Alert", f"{n_critical}", "Critical patients found", "#ff6b6b", "🚨"),
+        metric_card("Skill Match", f"{sam_score:.3f}", "Skill-acuity score (Stage 2)", "#1abc9c", "🧑‍⚕️"),
         metric_card("Smog Level", f"{aqi}", "Local PM2.5 surge weight", "#f1c40f", "🌫️"),
-        metric_card("Quantum PQC", "SECURE", "Post-Quantum Protected", "#1abc9c", "🛡️"),
     ]
 
     # ── Bed grid ─────────────────────────────────────────────────────────
@@ -576,7 +669,52 @@ def update_ui(data):
     ])
 
     ts = datetime.datetime.now().strftime("%H:%M:%S")
-    return cards, bed_grid, table, sec_panel, f"LIVE UPDATED: {ts}"
+
+    # ── Staff grid ───────────────────────────────────────────────────────────────
+    ward_map = [
+        ("ICU / Trauma",    "🏥", "🤚"),
+        ("Ventilator Unit",  "🪁", "🚨"),
+        ("General Ward",     "🛏️", "👨‍⚕️"),
+    ]
+    staff_cols = []
+    for ward_name, icon, _ in ward_map:
+        ward_staff = [a for a in s_alloc if a.get("ward") == ward_name]
+        staff_cols.append(staff_ward_column(ward_name, icon, ward_name, ward_staff, None))
+
+    # Pitch metrics strip
+    util_pct  = sm.get("utilization_pct", {})
+    s1_ms     = data.get("stage1_solve_ms", "?")
+    s2_ms     = data.get("stage2_solve_ms", "?")
+    unassign  = sm.get("unassigned_count", "?")
+    xqual     = sm.get("cross_qual_rate", "?")
+
+    util_badges = [
+        dbc.Badge(f"{role}: {pct}%", color="light", text_color="dark",
+                  style={"marginRight": "6px", "border": "2px solid #2d3436",
+                         "borderRadius": "8px", "fontWeight": "700"})
+        for role, pct in util_pct.items()
+    ]
+
+    staff_metrics_strip = dbc.Card(dbc.CardBody([
+        html.Div([
+            html.Span("📊 PITCH METRICS",
+                      style={"fontWeight": "700", "fontSize": "0.85rem", "marginRight": "20px", "color": "#636e72"}),
+            *util_badges,
+            dbc.Badge(f"Unassigned: {unassign} pts", color="danger",
+                      style={"marginRight": "6px", "borderRadius": "8px"}),
+            dbc.Badge(f"Cross-qual: {xqual}%", color="warning" if float(xqual or 0) > 0 else "success",
+                      style={"marginRight": "6px", "borderRadius": "8px"}),
+            dbc.Badge(f"S1: {s1_ms}ms → S2: {s2_ms}ms", color="dark",
+                      style={"borderRadius": "8px"}),
+        ], className="d-flex flex-wrap align-items-center gap-1"),
+    ]), className="command-card mb-3")
+
+    staff_grid = html.Div([
+        staff_metrics_strip,
+        dbc.Row(staff_cols, className="mb-4"),
+    ])
+
+    return cards, bed_grid, table, sec_panel, staff_grid, f"LIVE UPDATED: {ts}"
 
 
 # ── Entry ─────────────────────────────────────────────────────────────────────

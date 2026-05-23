@@ -217,8 +217,8 @@ app.layout = html.Div([
             ], width=4),
             dbc.Col([
                 html.Label("👤  PATIENT COUNT", style={"color": DARK, "fontSize": "0.85rem", "fontWeight": "700"}),
-                dcc.Slider(id="q-pts",  min=4,  max=12,  step=2,  value=6,
-                           marks={4: "4", 6: "6", 8: "8", 10: "10", 12: "MAX"}),
+                dcc.Slider(id="q-pts",  min=4,  max=20,  step=2,  value=16,
+                           marks={4: "4", 8: "8", 12: "12", 16: "16", 20: "MAX"}),
             ], width=4),
             dbc.Col([
                 dbc.Button("EXPLODE PIPELINE ⚛️", id="q-run-btn", 
@@ -242,6 +242,7 @@ app.layout = html.Div([
                     dbc.Tab(label="QUBO Matrix",     tab_id="tab-qubo"),
                     dbc.Tab(label="QAOA Circuit",    tab_id="tab-qaoa"),
                     dbc.Tab(label="Allocations",     tab_id="tab-alloc"),
+                    dbc.Tab(label="Staff QUBO",      tab_id="tab-staff"),
                 ]),
 
                 html.Div(id="q-tab-content"),
@@ -264,6 +265,7 @@ app.layout = html.Div([
 )
 def q_run_pipeline(_, aqi, n_patients):
     r = run_pipeline(aqi_level=float(aqi), n_patients=int(n_patients), verbose=False)
+    staff_df = r["staff_df"]
     return {
         "df":              r["df"].to_json(orient="split"),
         "urgency_scores":  r["urgency_scores"].tolist(),
@@ -282,6 +284,14 @@ def q_run_pipeline(_, aqi, n_patients):
         "qaoa_info":       r["qaoa_info"],
         "n_patients":      n_patients,
         "aqi":             aqi,
+        # Stage 2
+        "staff_df":        staff_df.to_json(orient="split"),
+        "staff_allocation": r["staff_allocation"],
+        "staff_metrics":    r["staff_metrics"],
+        "staff_qubo_dict":  {str(k): v for k, v in r["staff_qubo_dict"].items()},
+        "alpha_s":          r["alpha_s"],
+        "stage1_solve_ms":  r["stage1_solve_ms"],
+        "stage2_solve_ms":  r["stage2_solve_ms"],
     }
 
 
@@ -325,6 +335,8 @@ def render_tabs(data, active_tab):
         content = render_qubo_tab(data, n_vars)
     elif active_tab == "tab-qaoa":
         content = render_qaoa_tab(data)
+    elif active_tab == "tab-staff":
+        content = render_staff_tab(data)
     else:
         content = render_alloc_tab(data, df)
 
@@ -656,10 +668,141 @@ def render_alloc_tab(data, df):
     ])
 
 
-# ── Entry ─────────────────────────────────────────────────────────────────────
 
-if __name__ == "__main__":
-    app.run(debug=False, port=8051, host="0.0.0.0")
+# ── Staff QUBO tab ────────────────────────────────────────────────────────────
+
+def render_staff_tab(data):
+    import io as _io
+    sm        = data.get("staff_metrics", {})
+    s_alloc   = data.get("staff_allocation", [])
+    alpha_s   = data.get("alpha_s", 0)
+    s1_ms     = data.get("stage1_solve_ms", "?")
+    s2_ms     = data.get("stage2_solve_ms", "?")
+    staff_df  = pd.read_json(_io.StringIO(data["staff_df"]), orient="split") if "staff_df" in data else None
+    n_staff   = len(staff_df) if staff_df is not None else 0
+    n_patients = data.get("n_patients", 8)
+    n_vars_s   = n_staff * n_patients
+
+    if staff_df is None or not s_alloc:
+        return dbc.Alert("Run the pipeline to generate Stage 2 staff data.", color="warning")
+
+    # ── Staff QUBO heatmap ────────────────────────────────────────────────
+    raw_s = data.get("staff_qubo_dict", {})
+    M_s   = np.zeros((n_vars_s, n_vars_s))
+    for key_str, val in raw_s.items():
+        key_str = key_str.strip("()")
+        parts   = [p.strip().strip("'\"") for p in key_str.split(",")]
+        if len(parts) == 2:
+            def _vidx(v):
+                parts_v = v.split("_p")
+                return int(parts_v[0][1:]) * n_patients + int(parts_v[1])
+            try:
+                i, j = _vidx(parts[0]), _vidx(parts[1])
+                if 0 <= i < n_vars_s and 0 <= j < n_vars_s:
+                    M_s[i, j] += val
+                    if i != j:
+                        M_s[j, i] += val
+            except (IndexError, ValueError):
+                pass
+
+    # Only show first 48 variables for legibility
+    DISPLAY = min(n_vars_s, 48)
+    M_disp   = M_s[:DISPLAY, :DISPLAY]
+    role_labels = staff_df["role_name"].tolist()
+    xlabels = [
+        f"{role_labels[n_idx][:3]}-P{p_idx+1}"
+        for n_idx in range(min(n_staff, DISPLAY // n_patients + 1))
+        for p_idx in range(n_patients)
+    ][:DISPLAY]
+
+    fig_sq = go.Figure(go.Heatmap(
+        z=M_disp, x=xlabels, y=xlabels,
+        colorscale="RdBu", zmid=0,
+        showscale=True,
+        colorbar=dict(
+            tickfont=dict(color=DARK, family="Fredoka"),
+            title=dict(text="Q_s[i,j]", font=dict(color=DARK, family="Fredoka")),
+        ),
+    ))
+    fig_sq.update_layout(
+        title=dict(text=f"STAGE 2 STAFF QUBO  ({n_vars_s} VARS \u2014 SHOWING FIRST {DISPLAY})",
+                   font=dict(color=DARK, size=13, family="Fredoka")),
+        paper_bgcolor="white", plot_bgcolor="white",
+        xaxis=dict(color=DARK, tickangle=45, tickfont=dict(size=7)),
+        yaxis=dict(color=DARK, autorange="reversed", tickfont=dict(size=7)),
+        margin=dict(l=80, r=20, t=60, b=100),
+        height=480,
+    )
+
+    # ── Staff utilisation bar chart ───────────────────────────────────────
+    util_pct = sm.get("utilization_pct", {})
+    fig_util = go.Figure(go.Bar(
+        x=list(util_pct.keys()),
+        y=list(util_pct.values()),
+        marker_color=[TEAL if v <= 80 else RED for v in util_pct.values()],
+        text=[f"{v}%" for v in util_pct.values()],
+        textposition="outside",
+        textfont=dict(family="Fredoka", color=DARK),
+    ))
+    fig_util.add_hline(y=80, line_dash="dash", line_color=DARK, opacity=0.3,
+                       annotation_text="80% FULL", annotation_position="top right")
+    fig_util.update_layout(
+        title=dict(text="STAFF UTILISATION % PER ROLE", font=dict(color=DARK, size=13, family="Fredoka")),
+        paper_bgcolor="white", plot_bgcolor="white",
+        xaxis=dict(color=DARK),
+        yaxis=dict(color=DARK, gridcolor="#f1f2f6", range=[0, 115], title="Utilisation (%)"),
+        margin=dict(l=50, r=20, t=50, b=60),
+        height=300,
+    )
+
+    # ── Skill-acuity scatter ──────────────────────────────────────────────
+    fig_sam = go.Figure()
+    if s_alloc:
+        fig_sam.add_trace(go.Scatter(
+            x=[a["urgency"] for a in s_alloc],
+            y=[a["skill_level"] for a in s_alloc],
+            mode="markers+text",
+            text=[a["staff_id"] for a in s_alloc],
+            textposition="top center",
+            textfont=dict(size=9, family="Fredoka"),
+            marker=dict(
+                size=14,
+                color=[a["fatigue_score"] for a in s_alloc],
+                colorscale="RdYlGn_r",
+                showscale=True,
+                colorbar=dict(title="Fatigue", thickness=10),
+                line=dict(color=DARK, width=2),
+            ),
+        ))
+    fig_sam.update_layout(
+        title=dict(text="SKILL-ACUITY MATCH  (colour = fatigue)", font=dict(color=DARK, size=13, family="Fredoka")),
+        paper_bgcolor="white", plot_bgcolor="white",
+        xaxis=dict(color=DARK, gridcolor="#f1f2f6", title="Patient Urgency"),
+        yaxis=dict(color=DARK, gridcolor="#f1f2f6", title="Staff Skill Level"),
+        margin=dict(l=60, r=20, t=60, b=60),
+        height=320,
+    )
+
+    # ── Metric strip ─────────────────────────────────────────────────────
+    metric_strip = dbc.Row([
+        info_card("S2 QUBITS",     str(n_vars_s),       f"{n_staff} staff \u00d7 {n_patients} pts", DARK, "\ud83e\udde0"),
+        info_card("\u03b1_s PENALTY",    f"{alpha_s:.1f}",    "Uniqueness dominance", RED, "\u2696\ufe0f"),
+        info_card("SKILL MATCH",  f"{sm.get('skill_acuity_match', 0):.3f}", "Skill \u00d7 Acuity avg", TEAL, "\ud83c\udfaf"),
+        info_card("UNASSIGNED",   str(sm.get("unassigned_count", "?")), "Patients w/o staff", RED if sm.get("unassigned_count", 1) > 0 else TEAL, "\u26a0\ufe0f"),
+        info_card("CROSS-QUAL",   f"{sm.get('cross_qual_rate', 0)}%", "Floated staff rate", YELLOW, "\ud83d\udd04"),
+        info_card("SOLVE TIMES",  f"{s1_ms}/{s2_ms}ms", "Stage1 \u2192 Stage2", DARK, "\u23f1\ufe0f"),
+    ], className="g-3 mb-4")
+
+    return html.Div([
+        metric_strip,
+        dbc.Row([
+            dbc.Col(dbc.Card(dbc.CardBody(dcc.Graph(figure=fig_sq, config={"displayModeBar": False})), className="command-card"), width=7),
+            dbc.Col([
+                dbc.Card(dbc.CardBody(dcc.Graph(figure=fig_util, config={"displayModeBar": False})), className="command-card mb-4"),
+                dbc.Card(dbc.CardBody(dcc.Graph(figure=fig_sam, config={"displayModeBar": False})), className="command-card"),
+            ], width=5),
+        ], className="g-4"),
+    ])
 
 
 # ── Entry ─────────────────────────────────────────────────────────────────────

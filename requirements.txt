@@ -1,6 +1,6 @@
 appdirs==1.4.4
 autograd==1.8.0
-autoray==0.8.10
+autoray==0.6.12
 blinker==1.9.0
 branca==0.8.2
 cachetools==7.1.4
