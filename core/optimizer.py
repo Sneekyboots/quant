@@ -67,8 +67,15 @@ def build_qubo(urgency_scores: np.ndarray,
     R = len(resource_weights)
     Q = {}
 
+    # ── Clamp capacity to n_patients ──────────────────────────────────────
+    # β·(1−2·C_r) becomes a huge negative diagonal when C_r is large (e.g.
+    # 1500 for General Ward), overwhelming the utility objective and pulling
+    # every patient into the largest-capacity ward.  Clamping to min(C_r, M)
+    # keeps the capacity term correctly scaled for the current batch size.
+    eff_cap = [min(c, M) for c in resource_capacity]
+
     # ── Derive safe α from actual problem parameters ──────────────────────
-    alpha = compute_min_alpha(urgency_scores, resource_weights, resource_capacity, beta)
+    alpha = compute_min_alpha(urgency_scores, resource_weights, eff_cap, beta)
 
     # ── Term 1: Clinical utility (maximize → minimize negative) ──────────
     for i in range(M):
@@ -91,12 +98,10 @@ def build_qubo(urgency_scores: np.ndarray,
                 Q[key] = Q.get(key, 0.0) + 2 * alpha
 
     # ── Term 3: Capacity — soft penalty for exceeding resource limit ──────
-    # Expansion of β·(∑_i x_{i,r} - C_r)²:
-    #   diagonal: β*(1 - 2*C_r)  — negative when C_r > 0.5, but now safe
-    #                               because α was derived to dominate this
-    #   off-diag: +2β             per (i1, i2) patient pair per resource
+    # Use clamped effective capacity (eff_cap) so the diagonal term
+    # β(1-2·C) stays proportionate to n_patients rather than ward total.
     for r in range(R):
-        C = resource_capacity[r]
+        C = eff_cap[r]
         for i1 in range(M):
             v1 = _var(i1, r)
             Q[(v1, v1)] = Q.get((v1, v1), 0.0) + beta * (1 - 2 * C)
@@ -134,5 +139,55 @@ def parse_allocation(sample: dict, urgency_scores: np.ndarray) -> list[dict]:
                 "resource_idx": r,
                 "resource_name": RESOURCE_NAMES.get(r, f"Resource {r}"),
                 "urgency": round(float(urgency_scores[p]), 4),
+                "fallback": False,
             })
     return sorted(rows, key=lambda x: x["urgency"], reverse=True)
+
+
+def fill_unallocated(
+    allocation: list[dict],
+    n_patients: int,
+    urgency_scores: np.ndarray,
+    resource_capacity: list = RESOURCE_CAPACITY,
+) -> list[dict]:
+    """
+    Greedy post-processing: assign any SA-missed patients to the best ward
+    that still has spare capacity.  Patients are processed highest-urgency first.
+
+    Urgency tiers → preferred ward order:
+      ≥ 0.70  →  ICU  → Vent  → General
+      ≥ 0.40  →  Vent → ICU   → General
+      < 0.40  →  General → Vent → ICU
+    """
+    allocated   = {a["patient_idx"] for a in allocation}
+    ward_counts = {r: sum(1 for a in allocation if a["resource_idx"] == r)
+                   for r in range(len(resource_capacity))}
+
+    unallocated = sorted(
+        [p for p in range(n_patients) if p not in allocated],
+        key=lambda p: urgency_scores[p],
+        reverse=True,
+    )
+
+    for p in unallocated:
+        u = float(urgency_scores[p])
+        if u >= 0.70:
+            preference = [0, 1, 2]
+        elif u >= 0.40:
+            preference = [1, 0, 2]
+        else:
+            preference = [2, 1, 0]
+
+        for r in preference:
+            if r < len(resource_capacity) and ward_counts.get(r, 0) < resource_capacity[r]:
+                allocation.append({
+                    "patient_idx":   p,
+                    "resource_idx":  r,
+                    "resource_name": RESOURCE_NAMES.get(r, f"Resource {r}"),
+                    "urgency":       round(u, 4),
+                    "fallback":      True,   # SA missed this; greedy placed it
+                })
+                ward_counts[r] = ward_counts.get(r, 0) + 1
+                break
+
+    return sorted(allocation, key=lambda x: x["urgency"], reverse=True)

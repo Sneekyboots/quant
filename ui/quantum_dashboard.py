@@ -19,6 +19,7 @@ import dash_bootstrap_components as dbc
 import plotly.graph_objects as go
 
 from pipeline import run_pipeline
+from core.qsvm import NUM_QUBITS as QSVM_QUBITS
 
 # ── Custom "Beige & Fun" Theme ────────────────────────────────────────────────
 
@@ -217,7 +218,7 @@ app.layout = html.Div([
             ], width=4),
             dbc.Col([
                 html.Label("👤  PATIENT COUNT", style={"color": DARK, "fontSize": "0.85rem", "fontWeight": "700"}),
-                dcc.Slider(id="q-pts",  min=4,  max=20,  step=2,  value=16,
+                dcc.Slider(id="q-pts",  min=10,  max=300,  step=10,  value=100,
                            marks={4: "4", 8: "8", 12: "12", 16: "16", 20: "MAX"}),
             ], width=4),
             dbc.Col([
@@ -324,7 +325,7 @@ def render_tabs(data, active_tab):
         info_card("α Penalty",  f"{alpha:.1f}", "Dynamic β-dominance", RED, "⚖️"),
         info_card("QSVM F1",    f"{data['qsvm_f1']:.3f}", "Quantum Accuracy", TEAL, "🎯"),
         info_card("RF F1",      f"{data['rf_f1']:.3f}", "Classical Baseline", "#636e72", "📜"),
-        info_card("Q-Kernel",   "4 Qubits", "ZZFeatureMap (R_y)", DARK, "⚛️"),
+        info_card("Q-Kernel",   f"{QSVM_QUBITS} Qubits", "RY Angle Embedding", DARK, "⧛️"),
         info_card("QAOA Ansatz", "6 Qubits", "p=1 Trotter Depth", RED, "🌀"),
     ], className="g-3 mb-4")
 
@@ -407,7 +408,7 @@ def render_qsvm_tab(data, df):
                 dbc.Card(dbc.CardBody(dcc.Graph(figure=fig_urg, config={"displayModeBar": False})), className="command-card mb-4"),
                 dbc.Card(dbc.CardBody([
                     html.Div("🔬 INNER WORKINGS", style={"fontWeight": "700", "fontSize": "0.85rem", "marginBottom": "10px"}),
-                    html.Small("We map patient vitals into a 4-qubit Hilbert space using Angle Embedding. The overlap (kernel) measures similarity in a way classical SVMS can't easily see.",
+                    html.Small(f"We map patient vitals into a {QSVM_QUBITS}-qubit Hilbert space using Angle Embedding. The overlap (kernel) measures similarity in a way classical SVMs can't easily see.",
                                style={"color": "#636e72", "lineHeight": "1.4", "display": "block"})
                 ]), className="command-card")
             ], width=5),

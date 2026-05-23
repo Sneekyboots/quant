@@ -24,7 +24,7 @@ import time
 
 from data.generator import generate_patients, generate_staff, FEATURE_COLS
 from core.qsvm import QuantumSVM
-from core.optimizer import build_qubo, solve_qubo, parse_allocation
+from core.optimizer import build_qubo, solve_qubo, parse_allocation, fill_unallocated
 from core.baseline import classical_greedy, compute_utilization, random_forest_scores
 from core.security import MLKEMProxy
 from core.qaoa import draw_qaoa_circuit, circuit_info
@@ -36,7 +36,37 @@ from core.staff_optimizer import (
 _security = MLKEMProxy()
 
 
-def run_pipeline(aqi_level: float = 50.0, n_patients: int = 16, verbose: bool = True):
+def _triage_reason(resource_idx: int, urgency: float, row) -> str:
+    """Human-readable justification for a bed assignment based on patient vitals."""
+    bp    = float(row.get("bp_deviation",  0))
+    spo2  = float(row.get("spo2_deficit",  0))
+    hr    = float(row.get("hr_deviation",  0))
+    resp  = float(row.get("resp_rate",     0))
+    gcs   = float(row.get("gcs_deficit",   0))
+    lact  = float(row.get("lactate",       0))
+
+    if resource_idx == 0:   # ICU / Trauma
+        triggers = []
+        if urgency >= 0.80:  triggers.append("critical urgency")
+        if bp > 0.70:        triggers.append("severe BP deviation")
+        if lact > 0.50:      triggers.append("elevated lactate")
+        if gcs > 0.33:       triggers.append("GCS impairment")
+        if hr > 0.70:        triggers.append("extreme tachycardia")
+        return "ICU — " + (", ".join(triggers) if triggers else "multi-system compromise")
+    elif resource_idx == 1:  # Ventilator Unit
+        triggers = []
+        if spo2 > 0.50:  triggers.append("SpO₂ deficit")
+        if resp > 0.60:  triggers.append("severe tachypnoea")
+        if urgency >= 0.60: triggers.append(f"urgency {urgency:.2f}")
+        return "Vent — " + (", ".join(triggers) if triggers else "respiratory support needed")
+    else:                    # General Ward
+        triggers = []
+        if urgency < 0.40: triggers.append("stable vitals")
+        if gcs < 0.20:     triggers.append("alert & oriented")
+        return "General — " + (", ".join(triggers) if triggers else "monitoring, lower acuity")
+
+
+def run_pipeline(aqi_level: float = 50.0, n_patients: int = 100, verbose: bool = True):
     """
     Full pipeline: data → encrypt → QSVM → QUBO → SA → allocation.
     Returns dict with all results for dashboard consumption.
@@ -85,12 +115,42 @@ def run_pipeline(aqi_level: float = 50.0, n_patients: int = 16, verbose: bool = 
 
     # ── 4. Solve QUBO ────────────────────────────────────────────────────
     if verbose:
-        print("[4] Running Simulated Annealing optimizer (200 reads)...")
+        print("[4] Running Simulated Annealing optimizer (1000 reads)...")
 
     t0_stage1 = time.perf_counter()
-    sample = solve_qubo(Q, num_reads=200)
+    sample = solve_qubo(Q, num_reads=1000)
     stage1_solve_ms = round((time.perf_counter() - t0_stage1) * 1000, 1)
     quantum_allocation = parse_allocation(sample, urgency_scores)
+
+    # Greedy fallback: ensure SA-missed patients get a bed if capacity allows
+    quantum_allocation = fill_unallocated(
+        quantum_allocation, n_patients, urgency_scores
+    )
+
+    # Add per-allocation triage reason
+    for alloc in quantum_allocation:
+        alloc["reason"] = _triage_reason(
+            alloc["resource_idx"], alloc["urgency"], df.iloc[alloc["patient_idx"]]
+        )
+        if alloc.get("fallback"):
+            alloc["reason"] += "  [greedy placed]"
+
+    # Build waitlist: patients with no bed after fill (truly over capacity)
+    allocated_idxs = {a["patient_idx"] for a in quantum_allocation}
+    ward_occ = {r: sum(1 for a in quantum_allocation if a["resource_idx"] == r)
+                for r in range(3)}
+    from data.generator import RESOURCE_CAPACITY as _RC, RESOURCE_NAMES as _RN
+    full_wards = [_RN[r] for r, occ in ward_occ.items() if occ >= _RC[r]]
+    waitlist = [
+        {
+            "patient_idx": p,
+            "patient_id":  df.iloc[p]["patient_id"],
+            "urgency":     round(float(urgency_scores[p]), 4),
+            "reason":      "Waiting — " + (", ".join(f"{w} full" for w in full_wards)
+                           if full_wards else "pending bed assignment"),
+        }
+        for p in range(n_patients) if p not in allocated_idxs
+    ]
 
     # ── 4b. Stage 2 QUBO — Staff Assignment ──────────────────────────────
     if verbose:
@@ -99,7 +159,7 @@ def run_pipeline(aqi_level: float = 50.0, n_patients: int = 16, verbose: bool = 
     Q_staff, alpha_s = build_staff_qubo(staff_df, df, quantum_allocation, urgency_scores)
 
     t0_stage2 = time.perf_counter()
-    staff_sample = solve_staff_qubo(Q_staff, num_reads=200)
+    staff_sample = solve_staff_qubo(Q_staff, num_reads=1000)
     stage2_solve_ms = round((time.perf_counter() - t0_stage2) * 1000, 1)
 
     staff_allocation = parse_staff_allocation(
@@ -170,6 +230,7 @@ def run_pipeline(aqi_level: float = 50.0, n_patients: int = 16, verbose: bool = 
         "classical_utilization": c_util,
         "unallocated_quantum":   unallocated_quantum,
         "unallocated_classical": unallocated_classical,
+        "waitlist":              waitlist,
         # ── QUBO metadata ──────────────────────────────────────────────
         "alpha":                 alpha,
         "qubo_dict":             Q,

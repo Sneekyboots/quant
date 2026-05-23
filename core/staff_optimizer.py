@@ -26,6 +26,9 @@ from data.generator import STAFF_QUALIFICATIONS, STAFF_CAPACITY, STAFF_WEIGHTS, 
 BETA_S = 10.0   # capacity penalty weight
 GAMMA  = 50.0   # qualification mismatch penalty (must dominate utility to block mismatches)
 
+# SA is practical below this variable count; above it we use greedy assignment.
+STAFF_QUBO_VAR_LIMIT = 400   # ≈ 20 staff × 20 patients
+
 
 def _svar(n: int, p: int) -> str:
     return f"s{n}_p{p}"
@@ -56,6 +59,11 @@ def build_staff_qubo(
     N = len(staff_df)
     P = len(patient_df)
     Q: dict = {}
+
+    # Scale guard — SA is intractable for large N×P variable counts.
+    # Return a sentinel dict; solve_staff_qubo/parse_staff_allocation handle it.
+    if N * P > STAFF_QUBO_VAR_LIMIT:
+        return {"__greedy__": True}, 0.0
 
     # Patient → ward mapping from Stage 1
     ward_lookup = {a["patient_idx"]: a["resource_idx"] for a in quantum_allocation}
@@ -130,12 +138,82 @@ def build_staff_qubo(
 def solve_staff_qubo(Q_or_tuple, num_reads: int = 200) -> dict:
     """
     Simulated Annealing solver for the Stage 2 staff QUBO.
+    Returns the greedy sentinel unchanged when QUBO is over-scale.
     QPU-portable: same interface as optimizer.solve_qubo().
     """
     Q = Q_or_tuple[0] if isinstance(Q_or_tuple, tuple) else Q_or_tuple
+    if Q.get("__greedy__"):
+        return {"__greedy__": True}
     sampler = neal.SimulatedAnnealingSampler()
     result  = sampler.sample_qubo(Q, num_reads=num_reads)
     return result.first.sample
+
+
+def _greedy_staff_assign(
+    staff_df: pd.DataFrame,
+    patient_df: pd.DataFrame,
+    quantum_allocation: list[dict],
+    urgency_scores: np.ndarray,
+) -> list[dict]:
+    """
+    O(P·N) greedy staff-to-patient assignment used when the QUBO is over-scale.
+
+    For each patient (urgency-descending), assign the best available qualified
+    staff member — ranked by skill × (1−fatigue) × role_weight.
+    A staff member is 'available' if their remaining patient capacity > 0 and
+    they are qualified for the patient's ward.
+    """
+    ward_lookup = {a["patient_idx"]: a["resource_idx"]   for a in quantum_allocation}
+    name_lookup = {a["patient_idx"]: a["resource_name"]  for a in quantum_allocation}
+    N = len(staff_df)
+
+    # Remaining capacity per staff member
+    remaining = {}
+    for n_idx in range(N):
+        role_id = int(staff_df.iloc[n_idx]["role_id"])
+        remaining[n_idx] = STAFF_CAPACITY.get(role_id, 2)
+
+    # Pre-compute staff scores once
+    staff_scores = []
+    for n_idx in range(N):
+        row    = staff_df.iloc[n_idx]
+        role   = int(row["role_id"])
+        score  = float(row["skill_level"]) * (1.0 - float(row["fatigue_score"])) * STAFF_WEIGHTS.get(role, 1.0)
+        staff_scores.append((n_idx, score, set(STAFF_QUALIFICATIONS.get(role, []))))
+
+    # Sort patients by urgency descending
+    patient_order = sorted(range(len(patient_df)), key=lambda p: -urgency_scores[p])
+
+    rows = []
+    for p_idx in patient_order:
+        ward_idx = ward_lookup.get(p_idx, 2)
+        # Best qualified staff with remaining capacity
+        best = max(
+            ((n_idx, score) for n_idx, score, wards in staff_scores
+             if ward_idx in wards and remaining.get(n_idx, 0) > 0),
+            key=lambda x: x[1],
+            default=None,
+        )
+        if best is None:
+            continue
+        n_idx, _ = best
+        remaining[n_idx] -= 1
+        staff_row = staff_df.iloc[n_idx]
+        rows.append({
+            "staff_idx":     n_idx,
+            "patient_idx":   p_idx,
+            "staff_id":      staff_row["staff_id"],
+            "role_name":     staff_row["role_name"],
+            "role_id":       int(staff_row["role_id"]),
+            "skill_level":   round(float(staff_row["skill_level"]), 3),
+            "fatigue_score": round(float(staff_row["fatigue_score"]), 3),
+            "patient_id":    patient_df.iloc[p_idx]["patient_id"],
+            "ward":          name_lookup.get(p_idx, "General Ward"),
+            "urgency":       round(float(urgency_scores[p_idx]), 4),
+            "greedy":        True,
+        })
+
+    return sorted(rows, key=lambda x: x["urgency"], reverse=True)
 
 
 def parse_staff_allocation(
@@ -145,7 +223,10 @@ def parse_staff_allocation(
     quantum_allocation: list[dict],
     urgency_scores: np.ndarray,
 ) -> list[dict]:
-    """Convert flat binary sample into structured staff-assignment rows."""
+    """Convert flat binary sample into structured staff-assignment rows.
+    Falls back to greedy assignment when the QUBO was over-scale."""
+    if sample.get("__greedy__"):
+        return _greedy_staff_assign(staff_df, patient_df, quantum_allocation, urgency_scores)
     ward_lookup = {a["patient_idx"]: a["resource_name"] for a in quantum_allocation}
 
     rows = []

@@ -13,7 +13,7 @@ import pennylane as qml
 from sklearn.svm import SVC
 from sklearn.preprocessing import MinMaxScaler
 
-NUM_QUBITS = 4
+NUM_QUBITS = 8   # 8 clinical features → 8-qubit Hilbert space
 dev = qml.device("default.qubit", wires=NUM_QUBITS)
 
 

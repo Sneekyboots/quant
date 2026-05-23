@@ -135,6 +135,27 @@ body {
 .fatigue-high  { border-left: 6px solid #ff6b6b !important; }
 .fatigue-mid   { border-left: 6px solid #f1c40f !important; }
 .fatigue-low   { border-left: 6px solid #1abc9c !important; }
+
+.waitlist-card {
+    background: #fff5f5;
+    border: 3px solid #ff6b6b;
+    border-left: 8px solid #ff6b6b;
+    border-radius: 14px;
+    padding: 12px 16px;
+    margin-bottom: 10px;
+    box-shadow: 4px 4px 0px #2d3436;
+}
+
+.fallback-badge {
+    font-size: 0.6rem;
+    background: #f1c40f;
+    color: #2d3436;
+    border: 2px solid #2d3436;
+    border-radius: 6px;
+    padding: 1px 6px;
+    margin-left: 6px;
+    font-weight: 700;
+}
 """
 
 # ── UI Helpers ────────────────────────────────────────────────────────────────
@@ -151,10 +172,13 @@ def metric_card(title, value, subtitle="", color="#ff6b6b", icon=""):
         html.Div(subtitle, style={"color": "#636e72", "fontSize": "0.8rem", "marginTop": "8px", "fontWeight": "500"}),
     ]), className="command-card"), width=3)
 
-def bed_card(patient_id, urgency, bp, spo2):
+def bed_card(patient_id, urgency, bp, spo2, hr=0.0, gcs=0.0, lactate=0.0, reason="", is_fallback=False):
     is_critical = urgency >= 0.7
     pulse_class = "pulse-critical" if is_critical else ""
     
+    gcs_color    = "#ff6b6b" if gcs > 0.33    else "#2d3436"
+    lactate_color = "#ff6b6b" if lactate > 0.50 else "#2d3436"
+
     return html.Div([
         html.Div([
             html.Div([
@@ -171,13 +195,30 @@ def bed_card(patient_id, urgency, bp, spo2):
             html.Div([
                 html.Small("BP DEV", style={"fontSize": "0.55rem", "color": "#b2bec3", "fontWeight": "700"}),
                 html.Div(f"{bp:.2f}", style={"fontSize": "0.8rem", "fontWeight": "600"}),
-            ], style={"marginRight": "15px"}),
+            ], style={"marginRight": "10px"}),
             html.Div([
                 html.Small("O₂ SAT", style={"fontSize": "0.55rem", "color": "#b2bec3", "fontWeight": "700"}),
                 html.Div(f"{1.0-spo2:.2f}", style={"fontSize": "0.8rem", "fontWeight": "600"}),
-            ])
+            ], style={"marginRight": "10px"}),
+            html.Div([
+                html.Small("HR DEV", style={"fontSize": "0.55rem", "color": "#b2bec3", "fontWeight": "700"}),
+                html.Div(f"{hr:.2f}", style={"fontSize": "0.8rem", "fontWeight": "600"}),
+            ], style={"marginRight": "10px"}),
+            html.Div([
+                html.Small("GCS ▼", style={"fontSize": "0.55rem", "color": "#b2bec3", "fontWeight": "700"}),
+                html.Div(f"{gcs:.2f}", style={"fontSize": "0.8rem", "fontWeight": "600", "color": gcs_color}),
+            ], style={"marginRight": "10px"}),
+            html.Div([
+                html.Small("LACT", style={"fontSize": "0.55rem", "color": "#b2bec3", "fontWeight": "700"}),
+                html.Div(f"{lactate:.2f}", style={"fontSize": "0.8rem", "fontWeight": "600", "color": lactate_color}),
+            ]),
         ], className="d-flex")
-    ], className=f"bed-card {pulse_class}")
+        ] + ([
+            html.Div([
+                html.Small(reason, style={"color": "#636e72", "fontSize": "0.62rem",
+                                          "fontStyle": "italic", "marginTop": "6px", "display": "block"}),
+            ] + ([html.Span(" GREEDY PLACED", className="fallback-badge")] if is_fallback else []))
+        ] if reason else []),
 
 def resource_column(title, icon, color, capacity, assigned, df):
     used = len(assigned)
@@ -185,9 +226,14 @@ def resource_column(title, icon, color, capacity, assigned, df):
     for a in assigned:
         idx  = a["patient_idx"]
         pid  = df.loc[idx, "patient_id"] if idx < len(df) else f"P{idx}"
-        bp   = float(df.loc[idx, "bp_deviation"])  if idx < len(df) else 0.0
-        spo2 = float(df.loc[idx, "spo2_deficit"])  if idx < len(df) else 0.0
-        cards.append(bed_card(pid, a["urgency"], bp, spo2))
+        bp      = float(df.loc[idx, "bp_deviation"])  if idx < len(df) else 0.0
+        spo2    = float(df.loc[idx, "spo2_deficit"])   if idx < len(df) else 0.0
+        hr      = float(df.loc[idx, "hr_deviation"])   if (idx < len(df) and "hr_deviation" in df.columns)  else 0.0
+        gcs     = float(df.loc[idx, "gcs_deficit"])    if (idx < len(df) and "gcs_deficit"  in df.columns)  else 0.0
+        lactate = float(df.loc[idx, "lactate"])        if (idx < len(df) and "lactate"       in df.columns)  else 0.0
+        reason  = a.get("reason", "")
+        is_fb   = a.get("fallback", False)
+        cards.append(bed_card(pid, a["urgency"], bp, spo2, hr, gcs, lactate, reason, is_fb))
     
     for _ in range(capacity - used):
         cards.append(html.Div([
@@ -462,7 +508,7 @@ app.layout = html.Div([
                             dbc.Col([
                                 html.Label("👤  PATIENT INTAKE",
                                            style={"color": "#2d3436", "fontSize": "0.85rem", "fontWeight": "700"}),
-                                dcc.Slider(id="patients-slider", min=4, max=20, step=2, value=16,
+                                dcc.Slider(id="patients-slider", min=10, max=300, step=10, value=100,
                                            marks={4: "4", 8: "8", 12: "12", 16: "16", 20: "MAX"},
 
                                            className="mt-2"),
@@ -555,6 +601,7 @@ def run_and_store(_, aqi, n_patients):
         "staff_metrics":    results["staff_metrics"],
         "stage1_solve_ms":  results["stage1_solve_ms"],
         "stage2_solve_ms":  results["stage2_solve_ms"],
+        "waitlist":         results.get("waitlist", []),
     }
 
 
@@ -584,6 +631,7 @@ def update_ui(data):
     n        = data["n_patients"]
     sm       = data.get("staff_metrics", {})
     s_alloc  = data.get("staff_allocation", [])
+    waitlist = data.get("waitlist", [])
 
     # ── Metric cards ─────────────────────────────────────────────────────
     urgencies = [a["urgency"] for a in q_alloc]
@@ -608,7 +656,23 @@ def update_ui(data):
         assigned = [a for a in q_alloc if a.get("resource_idx") == ridx]
         cols.append(resource_column(title, icon, color, cap, assigned, df))
 
-    bed_grid = dbc.Row(cols, className="mb-4")
+    bed_grid = html.Div([
+        dbc.Row(cols, className="mb-3"),
+        # Waitlist panel (only shown when there are truly over-capacity patients)
+        html.Div([
+            html.Div([
+                html.Span("⏳", style={"fontSize": "1.2rem", "marginRight": "8px"}),
+                html.Span("PATIENT WAITLIST", style={"fontWeight": "700", "color": "#ff6b6b",
+                                                      "fontSize": "0.9rem", "textTransform": "uppercase"}),
+                dbc.Badge(f"{len(waitlist)} waiting", color="danger",
+                          style={"marginLeft": "10px", "borderRadius": "8px", "fontWeight": "700"}),
+            ], className="d-flex align-items-center mb-3"),
+            dbc.Row([
+                dbc.Col(waitlist_card(w["patient_id"], w["urgency"], w["reason"], i + 1), width=4)
+                for i, w in enumerate(waitlist)
+            ]),
+        ], style={"display": "block" if waitlist else "none"}),
+    ])
 
     # ── Patient intake table ──────────────────────────────────────────────
     rows = []
@@ -623,7 +687,12 @@ def update_ui(data):
             html.Td(row["patient_id"],          style={"fontWeight": "700", "fontFamily": "JetBrains Mono"}),
             html.Td(f"{row['bp_deviation']:.2f}"),
             html.Td(f"{1.0-row['spo2_deficit']:.2f}"),
-            html.Td(f"{row['aqi_pm25']:.1f}"),
+            html.Td(f"{row.get('hr_deviation', 0):.2f}"),
+            html.Td(f"{row.get('resp_rate', 0):.2f}"),
+            html.Td(f"{row.get('gcs_deficit', 0):.2f}",
+                    style={"color": "#ff6b6b" if row.get('gcs_deficit', 0) > 0.33 else "#2d3436", "fontWeight": "600"}),
+            html.Td(f"{row.get('lactate', 0):.2f}",
+                    style={"color": "#ff6b6b" if row.get('lactate', 0) > 0.50 else "#2d3436", "fontWeight": "600"}),
             html.Td(f"{u:.3f}", style={"color": "#ff6b6b" if is_critical else "#2d3436", "fontWeight": "700"}),
             html.Td(dbc.Badge("URGENT" if is_critical else "STABLE", 
                               color="danger" if is_critical else "success",
@@ -634,7 +703,8 @@ def update_ui(data):
     table = dbc.Table(
         [html.Thead(html.Tr([
             html.Th("PATIENT"), html.Th("BP Δ"), html.Th("O₂ SAT"),
-            html.Th("AQI"), html.Th("SCORE"), html.Th("STATUS"),
+            html.Th("HR DEV"), html.Th("RESP"), html.Th("GCS ▼"), html.Th("LACTATE"),
+            html.Th("SCORE"), html.Th("STATUS"),
             html.Th("ASSIGNED TO"),
         ])),
          html.Tbody(rows)],
