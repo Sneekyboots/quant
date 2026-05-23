@@ -9,6 +9,7 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
 import io
 import json
+import time
 import dash
 from dash import dcc, html, Input, Output, State
 import dash_bootstrap_components as dbc
@@ -175,11 +176,11 @@ def metric_card(title, value, subtitle="", color="#ff6b6b", icon=""):
 def bed_card(patient_id, urgency, bp, spo2, hr=0.0, gcs=0.0, lactate=0.0, reason="", is_fallback=False):
     is_critical = urgency >= 0.7
     pulse_class = "pulse-critical" if is_critical else ""
-    
-    gcs_color    = "#ff6b6b" if gcs > 0.33    else "#2d3436"
+
+    gcs_color     = "#ff6b6b" if gcs > 0.33    else "#2d3436"
     lactate_color = "#ff6b6b" if lactate > 0.50 else "#2d3436"
 
-    return html.Div([
+    children = [
         html.Div([
             html.Div([
                 html.Small("PATIENT ID", style={"fontSize": "0.6rem", "color": "#636e72", "display": "block", "fontWeight": "700"}),
@@ -190,7 +191,6 @@ def bed_card(patient_id, urgency, bp, spo2, hr=0.0, gcs=0.0, lactate=0.0, reason
                 html.Div(f"{urgency:.2f}", style={"fontWeight": "700", "color": "#ff6b6b" if is_critical else "#2d3436"}),
             ])
         ], className="d-flex justify-content-between align-items-start mb-2"),
-        
         html.Div([
             html.Div([
                 html.Small("BP DEV", style={"fontSize": "0.55rem", "color": "#b2bec3", "fontWeight": "700"}),
@@ -212,13 +212,18 @@ def bed_card(patient_id, urgency, bp, spo2, hr=0.0, gcs=0.0, lactate=0.0, reason
                 html.Small("LACT", style={"fontSize": "0.55rem", "color": "#b2bec3", "fontWeight": "700"}),
                 html.Div(f"{lactate:.2f}", style={"fontSize": "0.8rem", "fontWeight": "600", "color": lactate_color}),
             ]),
-        ], className="d-flex")
-        ] + ([
-            html.Div([
-                html.Small(reason, style={"color": "#636e72", "fontSize": "0.62rem",
-                                          "fontStyle": "italic", "marginTop": "6px", "display": "block"}),
-            ] + ([html.Span(" GREEDY PLACED", className="fallback-badge")] if is_fallback else []))
-        ] if reason else []),
+        ], className="d-flex"),
+    ]
+    if reason:
+        reason_bits = [
+            html.Small(reason, style={"color": "#636e72", "fontSize": "0.62rem",
+                                      "fontStyle": "italic", "marginTop": "6px", "display": "block"}),
+        ]
+        if is_fallback:
+            reason_bits.append(html.Span(" GREEDY PLACED", className="fallback-badge"))
+        children.append(html.Div(reason_bits))
+
+    return html.Div(children, className=f"bed-card {pulse_class}")
 
 def resource_column(title, icon, color, capacity, assigned, df):
     used = len(assigned)
@@ -293,6 +298,48 @@ def staff_chip(staff_id, role_name, skill, fatigue):
         html.Small(f"Skill {skill:.2f} · Fatigue {fatigue:.2f}",
                    style={"color": "#b2bec3", "display": "block", "fontSize": "0.65rem"}),
     ], className=f"staff-chip {fatigue_cls}")
+
+
+# ── Section header helper ────────────────────────────────────────────────────
+
+def section_header(num, icon, title, description):
+    """Numbered section heading with a plain-English subtitle."""
+    return html.Div([
+        html.Div([
+            html.Span(f"{num:02d}", style={
+                "fontFamily": "JetBrains Mono", "fontWeight": "700",
+                "fontSize": "0.8rem", "color": "#b2bec3",
+                "border": "2px solid #dfe6e9", "borderRadius": "6px",
+                "padding": "1px 8px", "marginRight": "10px",
+                "letterSpacing": "0.08em",
+            }),
+            html.Span(icon + "  ", style={"fontSize": "1.1rem"}),
+            html.Span(title, style={
+                "fontWeight": "700", "fontSize": "1.0rem", "color": "#2d3436",
+            }),
+        ], className="d-flex align-items-center mb-1"),
+        html.P(description, style={
+            "color": "#636e72", "fontSize": "0.82rem",
+            "margin": "0 0 14px 50px", "fontWeight": "500", "lineHeight": "1.5",
+        }),
+    ], style={"marginBottom": "4px"})
+
+
+def waitlist_card(patient_id, urgency, reason, position):
+    """Compact card for a patient who is over-capacity and waiting."""
+    return html.Div([
+        html.Div([
+            dbc.Badge(f"#{position}", color="danger",
+                      style={"marginRight": "8px", "borderRadius": "6px",
+                             "fontFamily": "JetBrains Mono", "fontSize": "0.7rem"}),
+            html.Span(patient_id, style={"fontWeight": "700",
+                                         "fontFamily": "JetBrains Mono"}),
+        ], className="d-flex align-items-center mb-1"),
+        html.Div(f"Urgency: {urgency:.3f}",
+                 style={"fontSize": "0.8rem", "color": "#ff6b6b", "fontWeight": "700"}),
+        html.Div(reason or "Over capacity",
+                 style={"fontSize": "0.75rem", "color": "#636e72", "fontStyle": "italic"}),
+    ], className="waitlist-card")
 
 
 def staff_ward_column(title, icon, ward_name, ward_assignments, df_staff):
@@ -426,6 +473,44 @@ body {
     from { transform: rotate(-1deg) scale(1); }
     to { transform: rotate(1deg) scale(1.02); }
 }
+
+@keyframes qs-spin {
+    from { transform: rotate(0deg); }
+    to   { transform: rotate(360deg); }
+}
+
+.qs-spinner-wrap {
+    padding: 40px 48px;
+    background: white;
+    border-radius: 20px;
+    border: 4px solid #2d3436;
+    box-shadow: 10px 10px 0 #2d3436;
+    text-align: center;
+}
+
+.qs-spinner-icon {
+    font-size: 2.8rem;
+    display: inline-block;
+    animation: qs-spin 1.8s linear infinite;
+    line-height: 1;
+    margin-bottom: 12px;
+}
+
+.log-panel-box {
+    background: #0d1117;
+    color: #7ee787;
+    font-family: 'JetBrains Mono', monospace;
+    font-size: 0.72rem;
+    border: 3px solid #2d3436;
+    border-radius: 14px;
+    padding: 16px 20px;
+    box-shadow: 6px 6px 0px #2d3436;
+    white-space: pre-wrap;
+    word-break: break-all;
+    max-height: 420px;
+    overflow-y: auto;
+    line-height: 1.75;
+}
 """
 
 import datetime
@@ -463,6 +548,26 @@ app.index_string = app.index_string.replace(
 app.layout = html.Div([
     dcc.Store(id="pipeline-store"),
 
+    # ── Global loading overlay (visible while run_and_store executes) ────
+    dcc.Loading(
+        fullscreen=True,
+        overlay_style={
+            "visibility": "visible",
+            "backgroundColor": "rgba(253,250,245,0.92)",
+            "zIndex": 9999,
+        },
+        delay_show=100,
+        custom_spinner=html.Div([
+            html.Div("⚛️", className="qs-spinner-icon"),
+            html.H4("Running Quantum Pipeline…",
+                    style={"fontFamily": "Fredoka", "fontWeight": "700",
+                           "color": "#2d3436", "margin": "0 0 6px 0"}),
+            html.P("QSVM kernel · QUBO optimizer · ML-KEM-768 encryption",
+                   style={"color": "#636e72", "fontSize": "0.85rem", "margin": 0}),
+        ], className="qs-spinner-wrap"),
+        children=html.Div(id="loading-trigger", style={"display": "none"}),
+    ),
+
     # ── Top nav ──────────────────────────────────────────────────────────
     html.Div([
         dbc.Container([
@@ -491,31 +596,65 @@ app.layout = html.Div([
 
     dbc.Container([
 
-        # ── Controls ─────────────────────────────────────────────────────
+        # ── STEP 0 — Configure & Run ─────────────────────────────────────
         dbc.Row([
             dbc.Col([
                 dbc.Card([
                     dbc.CardBody([
+                        html.Div([
+                            html.Span("STEP 0", style={
+                                "fontFamily": "JetBrains Mono", "fontWeight": "700",
+                                "fontSize": "0.75rem", "color": "#b2bec3",
+                                "letterSpacing": "0.1em", "marginRight": "10px",
+                                "border": "2px solid #dfe6e9", "borderRadius": "6px",
+                                "padding": "1px 8px",
+                            }),
+                            html.Span("Configure & Run",
+                                      style={"fontWeight": "700", "fontSize": "1rem",
+                                             "color": "#2d3436"}),
+                        ], className="d-flex align-items-center mb-1"),
+                        html.P(
+                            "Set the air-quality index (AQI) to simulate a pollution surge, choose how "
+                            "many patients arrive, then press Optimize to run all 8 pipeline stages.",
+                            style={"color": "#636e72", "fontSize": "0.82rem",
+                                   "margin": "0 0 16px 0", "lineHeight": "1.5"},
+                        ),
                         dbc.Row([
                             dbc.Col([
-                                html.Label("🌫️  SMOG INTENSITY (PM2.5)",
-                                           style={"color": "#2d3436", "fontSize": "0.85rem", "fontWeight": "700"}),
+                                html.Label("AQI / Smog Intensity (PM2.5)",
+                                           style={"color": "#2d3436", "fontSize": "0.85rem",
+                                                  "fontWeight": "700"}),
+                                html.Small(
+                                    "Higher AQI \u2192 more respiratory cases \u2192 higher urgency scores",
+                                    style={"color": "#636e72", "display": "block",
+                                           "marginBottom": "4px", "fontSize": "0.75rem"},
+                                ),
                                 dcc.Slider(id="aqi-slider", min=0, max=500, step=10, value=50,
-                                           marks={0: "CLEAR", 250: "MID", 500: "SURGE"},
+                                           marks={0: "Clear", 250: "Moderate", 500: "Surge"},
                                            tooltip={"placement": "bottom", "always_visible": False},
-                                           className="mt-2"),
+                                           className="mt-1"),
                             ], width=5),
                             dbc.Col([
-                                html.Label("👤  PATIENT INTAKE",
-                                           style={"color": "#2d3436", "fontSize": "0.85rem", "fontWeight": "700"}),
-                                dcc.Slider(id="patients-slider", min=10, max=300, step=10, value=100,
-                                           marks={4: "4", 8: "8", 12: "12", 16: "16", 20: "MAX"},
-
-                                           className="mt-2"),
+                                html.Label("Patient Intake Count",
+                                           style={"color": "#2d3436", "fontSize": "0.85rem",
+                                                  "fontWeight": "700"}),
+                                html.Small(
+                                    "\u26a0\ufe0f  More patients = longer QSVM kernel computation",
+                                    style={"color": "#f39c12", "display": "block",
+                                           "marginBottom": "4px", "fontSize": "0.75rem",
+                                           "fontWeight": "600"},
+                                ),
+                                html.Div(
+                                    dcc.Slider(id="patients-slider", min=10, max=300, step=10, value=100,
+                                               marks={10: "10", 100: "100", 200: "200", 300: "300"},
+                                               className="mt-1"),
+                                    style={"paddingRight": "20px"},
+                                ),
                             ], width=4),
                             dbc.Col([
-                                dbc.Button("OPTIMIZE NOW! 🚀", id="run-btn", className="run-button w-100 py-2",
-                                           style={"marginTop": "1.4rem"}),
+                                dbc.Button("Optimize Now \ud83d\ude80", id="run-btn",
+                                           className="run-button w-100 py-3",
+                                           style={"marginTop": "1.8rem", "fontSize": "0.9rem"}),
                             ], width=3),
                         ])
                     ])
@@ -523,12 +662,18 @@ app.layout = html.Div([
             ], width=12),
         ]),
 
-        # ── Metric cards ──────────────────────────────────────────────────
-        dbc.Row(id="metric-cards", className="mb-4"),
+        # ── KPI snapshot ──────────────────────────────────────────────────
+        dbc.Row(id="metric-cards", className="mb-3"),
 
-        # ── Bed grid ──────────────────────────────────────────────────────
-        html.H6("🏨 LIVE WARD SNAPSHOT",
-                style={"color": "#636e72", "fontSize": "0.85rem", "fontWeight": "700", "marginBottom": "1rem"}),
+        html.Hr(style={"borderColor": "#dfe6e9", "borderWidth": "2px", "margin": "20px 0"}),
+
+        # ── 01 — Quantum Bed Allocation ──────────────────────────────────
+        section_header(
+            1, "\U0001f3e8", "Quantum Bed Allocation",
+            "The QUBO optimizer scores every patient via the QSVM urgency model, "
+            "then assigns each to the most appropriate ward \u2014 ICU / Trauma, "
+            "Ventilator Unit, or General Ward.",
+        ),
         dcc.Loading(
             id="loading-beds",
             type="cube",
@@ -536,31 +681,67 @@ app.layout = html.Div([
             children=html.Div(id="bed-grid"),
         ),
 
-        html.Hr(style={"borderColor": "#2d3436", "borderWidth": "3px", "margin": "30px 0"}),
+        html.Hr(style={"borderColor": "#dfe6e9", "borderWidth": "2px", "margin": "24px 0"}),
 
-        # ── Patient intake table ──────────────────────────────────────────
-        html.H6("📋  PATIENT QUEUE",
-                style={"color": "#636e72", "fontWeight": "700", "fontSize": "0.85rem"}),
+        # ── 02 — Patient Triage Queue ────────────────────────────────────
+        section_header(
+            2, "\U0001f4cb", "Patient Triage Queue",
+            "All patients ranked by the QSVM urgency score (0\u20131). "
+            "Red rows are critical (score \u2265 0.7) and are prioritised by the optimizer.",
+        ),
+        html.Div(
+            "Column guide \u2014  "
+            "BP \u0394: blood-pressure deviation  \u00b7  "
+            "O\u2082 SAT: oxygen saturation  \u00b7  "
+            "HR DEV: heart-rate deviation  \u00b7  "
+            "RESP: respiratory rate  \u00b7  "
+            "GCS \u25bc: Glasgow Coma Score deficit (higher = worse)  \u00b7  "
+            "LACTATE: serum lactate (higher = worse)  \u00b7  "
+            "SCORE: QSVM urgency 0\u20131",
+            style={
+                "background": "#f8f9fa", "border": "2px solid #dfe6e9",
+                "borderRadius": "10px", "padding": "8px 14px",
+                "fontSize": "0.76rem", "color": "#636e72",
+                "fontFamily": "JetBrains Mono", "marginBottom": "12px",
+                "lineHeight": "1.8",
+            },
+        ),
         html.Div(id="patient-table"),
 
-        html.Hr(style={"borderColor": "#2d3436", "borderWidth": "3px", "margin": "30px 0"}),
+        html.Hr(style={"borderColor": "#dfe6e9", "borderWidth": "2px", "margin": "24px 0"}),
 
-        # ── Security panel ────────────────────────────────────────────────
-        html.H6("🛡️  QUANTUM SHIELD ACTIVATED",
-                style={"color": "#636e72", "fontWeight": "700", "fontSize": "0.85rem"}),
-        html.Div(id="security-panel"),
-
-        html.Hr(style={"borderColor": "#2d3436", "borderWidth": "3px", "margin": "30px 0"}),
-
-        # ── Staff grid ──────────────────────────────────────────────────
-        html.H6("👨‍⚕️ STAFF DEPLOYMENT — STAGE 2 QUBO",
-                style={"color": "#636e72", "fontSize": "0.85rem", "fontWeight": "700", "marginBottom": "1rem"}),
+        # ── 03 — Staff Deployment ────────────────────────────────────────
+        section_header(
+            3, "\U0001f468\u200d\u2695\ufe0f", "Staff Deployment \u2014 QUBO Stage 2",
+            "A second QUBO problem matches qualified clinical staff to each ward, "
+            "balancing role requirements, skill level, and real-time fatigue scores.",
+        ),
         dcc.Loading(
             id="loading-staff",
             type="cube",
             color="#1abc9c",
             children=html.Div(id="staff-grid"),
         ),
+
+        html.Hr(style={"borderColor": "#dfe6e9", "borderWidth": "2px", "margin": "24px 0"}),
+
+        # ── 04 — Post-Quantum Security ───────────────────────────────────
+        section_header(
+            4, "\U0001f6e1\ufe0f", "Post-Quantum Encryption (NIST FIPS 203)",
+            "Every patient record is encrypted on-device with ML-KEM-768 key exchange "
+            "and AES-256-GCM symmetric encryption \u2014 resistant to future quantum attacks.",
+        ),
+        html.Div(id="security-panel"),
+
+        html.Hr(style={"borderColor": "#dfe6e9", "borderWidth": "2px", "margin": "24px 0"}),
+
+        # ── 05 — Pipeline Log ────────────────────────────────────────────
+        section_header(
+            5, "\U0001f4df", "Pipeline Log",
+            "Raw verbose output of all 8 stages from the last optimization run. "
+            "Use this to check timings and verify each algorithm step completed correctly.",
+        ),
+        html.Div(id="log-panel"),
 
         html.Div(style={"height": "60px"}),
 
@@ -573,13 +754,23 @@ app.layout = html.Div([
 
 @app.callback(
     Output("pipeline-store", "data"),
+    Output("loading-trigger", "children"),
     Input("run-btn", "n_clicks"),
     State("aqi-slider", "value"),
     State("patients-slider", "value"),
     prevent_initial_call=True,
 )
 def run_and_store(_, aqi, n_patients):
-    results = run_pipeline(aqi_level=float(aqi), n_patients=int(n_patients), verbose=False)
+    t0 = time.time()
+    log_buf = io.StringIO()
+    _old_stdout = sys.stdout
+    sys.stdout = log_buf
+    try:
+        results = run_pipeline(aqi_level=float(aqi), n_patients=int(n_patients), verbose=True)
+    finally:
+        sys.stdout = _old_stdout
+    elapsed = round(time.time() - t0, 1)
+    log_text = log_buf.getvalue()
     staff_df = results["staff_df"]
     return {
         "df":               results["df"].to_json(orient="split"),
@@ -602,7 +793,9 @@ def run_and_store(_, aqi, n_patients):
         "stage1_solve_ms":  results["stage1_solve_ms"],
         "stage2_solve_ms":  results["stage2_solve_ms"],
         "waitlist":         results.get("waitlist", []),
-    }
+        "log_text":         log_text,
+        "elapsed":          elapsed,
+    }, ""
 
 
 @app.callback(
@@ -612,17 +805,46 @@ def run_and_store(_, aqi, n_patients):
     Output("security-panel", "children"),
     Output("staff-grid", "children"),
     Output("last-update", "children"),
+    Output("log-panel", "children"),
     Input("pipeline-store", "data"),
 )
 def update_ui(data):
     if data is None:
-        placeholder = dbc.Alert([
-            html.H4("READY FOR ACTION!", className="alert-heading", style={"fontWeight": "700"}),
-            html.P("Set your parameters and hit the big red button to start the simulation."),
-        ], color="warning", className="text-center py-5", style={
-            "border": "3px solid #2d3436", "borderRadius": "16px", "boxShadow": "8px 8px 0px #2d3436"
-        })
-        return [], placeholder, [], [], [], ""
+        # Show pipeline overview while waiting
+        overview = dbc.Card(dbc.CardBody([
+            html.H5("How the pipeline works",
+                    style={"fontWeight": "700", "color": "#2d3436", "marginBottom": "16px"}),
+            *[
+                html.Div([
+                    html.Span(f"{n:02d}", style={
+                        "fontFamily": "JetBrains Mono", "fontWeight": "700",
+                        "fontSize": "0.8rem", "color": "#b2bec3",
+                        "border": "2px solid #dfe6e9", "borderRadius": "6px",
+                        "padding": "1px 7px", "marginRight": "10px",
+                    }),
+                    html.Span(icon + "  ", style={"fontSize": "1.1rem"}),
+                    html.Span(label, style={"fontWeight": "700", "color": "#2d3436",
+                                            "marginRight": "8px"}),
+                    html.Span(desc, style={"color": "#636e72", "fontSize": "0.82rem"}),
+                ], className="d-flex align-items-center mb-3")
+                for n, icon, label, desc in [
+                    (1, "⚛️",  "QSVM Urgency Scoring",
+                     "Quantum kernel ranks every patient by clinical criticality"),
+                    (2, "🏥",  "QUBO Bed Allocation",
+                     "Quantum annealer assigns patients to ICU / Vent / General Ward"),
+                    (3, "👨\u200d⚕️", "QUBO Staff Deployment",
+                     "Second QUBO matches staff to wards by skill and fatigue"),
+                    (4, "🛡️",  "ML-KEM-768 Encryption",
+                     "Every record encrypted with NIST FIPS 203 post-quantum crypto"),
+                    (5, "#️⃣",  "Audit Hash",
+                     "SHA-512 proof of allocation integrity stored in the ledger"),
+                ]
+            ],
+            html.P("Set your parameters above and press Optimize Now to begin.",
+                   style={"color": "#636e72", "fontSize": "0.85rem",
+                          "margin": "8px 0 0 0", "fontStyle": "italic"}),
+        ]), className="command-card")
+        return [], overview, [], [], [], "", None
 
     df       = pd.read_json(io.StringIO(data["df"]), orient="split")
     q_alloc  = data["q_alloc"]
@@ -751,7 +973,7 @@ def update_ui(data):
         ward_staff = [a for a in s_alloc if a.get("ward") == ward_name]
         staff_cols.append(staff_ward_column(ward_name, icon, ward_name, ward_staff, None))
 
-    # Pitch metrics strip
+    # Staff utilization metrics strip
     util_pct  = sm.get("utilization_pct", {})
     s1_ms     = data.get("stage1_solve_ms", "?")
     s2_ms     = data.get("stage2_solve_ms", "?")
@@ -767,7 +989,7 @@ def update_ui(data):
 
     staff_metrics_strip = dbc.Card(dbc.CardBody([
         html.Div([
-            html.Span("📊 PITCH METRICS",
+            html.Span("📊 Staff Utilization Metrics",
                       style={"fontWeight": "700", "fontSize": "0.85rem", "marginRight": "20px", "color": "#636e72"}),
             *util_badges,
             dbc.Badge(f"Unassigned: {unassign} pts", color="danger",
@@ -784,7 +1006,21 @@ def update_ui(data):
         dbc.Row(staff_cols, className="mb-4"),
     ])
 
-    return cards, bed_grid, table, sec_panel, staff_grid, f"LIVE UPDATED: {ts}"
+    # ── Log panel ─────────────────────────────────────────────────────────
+    log_text = data.get("log_text", "")
+    elapsed  = data.get("elapsed", 0)
+    log_panel = dbc.Card(dbc.CardBody([
+        html.Div([
+            html.Span("✅ PIPELINE COMPLETE",
+                      style={"fontWeight": "700", "color": "#1abc9c", "fontSize": "0.85rem"}),
+            dbc.Badge(f"⏱ {elapsed}s total", color="dark",
+                      style={"marginLeft": "12px", "borderRadius": "8px",
+                             "fontFamily": "JetBrains Mono", "fontSize": "0.78rem"}),
+        ], className="mb-2"),
+        html.Pre(log_text or "(no log output)", className="log-panel-box mb-0"),
+    ]), className="command-card") if log_text else None
+
+    return cards, bed_grid, table, sec_panel, staff_grid, f"LIVE UPDATED: {ts}", log_panel
 
 
 # ── Entry ─────────────────────────────────────────────────────────────────────

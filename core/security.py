@@ -2,77 +2,86 @@
 core/security.py
 Post-Quantum Encryption layer for secure patient data ingestion.
 
-Production target : ML-KEM-768  (NIST FIPS 203 / CRYSTALS-Kyber)
-This mock uses    : Curve25519 + XSalsa20-Poly1305  (PyNaCl Box)
-
-The structure is structurally identical to real KEM —
-key generation → encapsulation → decapsulation.
-To upgrade, replace nacl.public.Box with liboqs.KeyEncapsulation("Kyber768").
+Implementation    : ML-KEM-768  (NIST FIPS 203 / CRYSTALS-Kyber)  via liboqs
+KEM + DEM construction:
+  keygen      → oqs.KeyEncapsulation("Kyber768").generate_keypair()
+  encapsulate → oqs.KeyEncapsulation("Kyber768").encap_secret(pubkey)
+                  → (ct_kem, shared_secret)
+  DEM         → AES-256-GCM(shared_secret[:32]).encrypt(nonce, plaintext)
+  decapsulate → self._kem.decap_secret(ct_kem) → shared_secret
+              → AES-256-GCM(shared_secret[:32]).decrypt(nonce, ct_payload)
 
 Citation  : NIST FIPS 203 (2024)  https://doi.org/10.6028/NIST.FIPS.203
 Addresses : Problem #16 — Secure Platform
 """
 
+import base64
+import hashlib
 import json
-import nacl.public
-import nacl.encoding
-import nacl.hash
+import os
+
+import oqs
 import pandas as pd
+from cryptography.hazmat.primitives.ciphers.aead import AESGCM
 from typing import Any
 
 
 class MLKEMProxy:
     """
-    Hospital-side post-quantum key encapsulation proxy.
+    Hospital-side ML-KEM-768 key encapsulation (real liboqs implementation).
 
     Flow
     ────
-    1. Hospital calls __init__() → generates keypair  (≈ ML-KEM keygen)
-    2. IoT sensor calls encrypt_patient_record(row, pubkey)
-         → encrypts vitals before network transit  (≈ KEM encapsulate)
+    1. Hospital calls __init__() → ML-KEM-768 keygen
+    2. IoT sensor calls encrypt_patient_record(row)
+         → KEM encapsulate → AES-256-GCM encrypt  (KEM + DEM)
     3. Hospital server calls decrypt_patient_record(blob)
-         → recovers plaintext for QSVM processing  (≈ KEM decapsulate)
+         → KEM decapsulate → AES-256-GCM decrypt
     4. Allocation result is audit-hashed for tamper evidence
     """
 
-    ALGORITHM   = "Curve25519-XSalsa20-Poly1305  (ML-KEM-768 proxy)"
+    ALGORITHM   = "ML-KEM-768 + AES-256-GCM  (NIST FIPS 203 / liboqs)"
     NIST_TARGET = "NIST FIPS 203 — ML-KEM-768  (CRYSTALS-Kyber, liboqs)"
     PROBLEM_REF = "Problem #16 — Secure Platform"
 
     def __init__(self):
-        # Hospital keypair  (simulates ML-KEM keygen)
-        self._priv  = nacl.public.PrivateKey.generate()
-        self.pubkey = self._priv.public_key
+        # ML-KEM-768 keygen — hospital holds secret key, shares public key
+        self._kem   = oqs.KeyEncapsulation("Kyber768")
+        self.pubkey = self._kem.generate_keypair()  # bytes
 
     # ── Encryption  (IoT sensor / edge node side) ─────────────────────────
 
     def encrypt_patient_record(self, record: dict[str, Any]) -> dict:
         """
-        Encrypt one patient record dict with a fresh ephemeral sender key
-        (provides forward secrecy — each record is independently protected).
-        Simulates IoT sensor → hospital server transit.
+        KEM encapsulate + AES-256-GCM encrypt one patient record.
+        Each call creates a fresh KEM encapsulation → forward secrecy.
         """
-        eph_priv   = nacl.public.PrivateKey.generate()
-        box        = nacl.public.Box(eph_priv, self.pubkey)
+        # KEM encapsulate: derive one-time shared secret
+        with oqs.KeyEncapsulation("Kyber768") as sender:
+            ct_kem, shared_secret = sender.encap_secret(self.pubkey)
+
+        # DEM: AES-256-GCM encrypt the payload with the shared secret
+        nonce      = os.urandom(12)
         plaintext  = json.dumps(record, default=str).encode("utf-8")
-        ciphertext = box.encrypt(plaintext, encoder=nacl.encoding.Base64Encoder)
+        ct_payload = AESGCM(shared_secret[:32]).encrypt(nonce, plaintext, None)
+
         return {
-            "ciphertext":     ciphertext.decode("ascii"),
-            "eph_pubkey_hex": bytes(eph_priv.public_key).hex(),
-            "algorithm":      self.ALGORITHM,
+            "ct_kem":     base64.b64encode(ct_kem).decode("ascii"),
+            "ct_payload": base64.b64encode(ct_payload).decode("ascii"),
+            "nonce":      base64.b64encode(nonce).decode("ascii"),
+            "algorithm":  self.ALGORITHM,
         }
 
     # ── Decryption  (hospital server side) ───────────────────────────────
 
     def decrypt_patient_record(self, blob: dict) -> dict:
-        """Decrypt a single blob using the hospital private key."""
-        eph_pub = nacl.public.PublicKey(bytes.fromhex(blob["eph_pubkey_hex"]))
-        box     = nacl.public.Box(self._priv, eph_pub)
-        plain   = box.decrypt(
-            blob["ciphertext"].encode("ascii"),
-            encoder=nacl.encoding.Base64Encoder,
-        )
-        return json.loads(plain)
+        """KEM decapsulate → AES-256-GCM decrypt."""
+        ct_kem        = base64.b64decode(blob["ct_kem"])
+        ct_payload    = base64.b64decode(blob["ct_payload"])
+        nonce         = base64.b64decode(blob["nonce"])
+        shared_secret = self._kem.decap_secret(ct_kem)
+        plaintext     = AESGCM(shared_secret[:32]).decrypt(nonce, ct_payload, None)
+        return json.loads(plaintext)
 
     # ── DataFrame helpers ─────────────────────────────────────────────────
 
@@ -94,14 +103,12 @@ class MLKEMProxy:
         any post-hoc change to the allocation is detectable.
         """
         payload = json.dumps(data, sort_keys=True, default=str).encode("utf-8")
-        return nacl.hash.sha512(
-            payload, encoder=nacl.encoding.HexEncoder
-        ).decode("ascii")
+        return hashlib.sha512(payload).hexdigest()
 
     # ── Dashboard summary ─────────────────────────────────────────────────
 
     def summary(self) -> dict:
-        pub_hex = bytes(self.pubkey).hex()
+        pub_hex = self.pubkey.hex()
         return {
             "status":          "🔒  Active",
             "algorithm":       self.ALGORITHM,
