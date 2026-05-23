@@ -1,9 +1,14 @@
 # 🏥 QX Quantum Hospital Optimizer
 ### *Quantum-Assisted Triage, Allocation & Secure Data Platform for Respiratory Surges*
 
-> **Judge Pitch** — This is a fully working, end-to-end hybrid quantum-classical system. Every algorithm shown in the dashboard is real: real quantum kernel computation via PennyLane, real QUBO solving via D-Wave's Neal sampler, real post-quantum encryption via liboqs (NIST FIPS 203). No mocks. No placeholders.
+ This is a fully working, end-to-end hybrid quantum-classical system. Every algorithm shown in the dashboard is real: real quantum kernel computation via PennyLane, real QUBO solving via D-Wave's Neal sampler, real post-quantum encryption via liboqs (NIST FIPS 203). No mocks. No placeholders.
 
 ---
+## Demo 
+
+
+https://github.com/user-attachments/assets/4d661c43-0ee6-4504-b02d-76f0e4aeba7f
+
 
 ## The Problem We Solve
 
