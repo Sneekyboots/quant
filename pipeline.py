@@ -68,15 +68,30 @@ def _triage_reason(resource_idx: int, urgency: float, row) -> str:
         return "General — " + (", ".join(triggers) if triggers else "monitoring, lower acuity")
 
 
-def run_pipeline(aqi_level: float = 50.0, n_patients: int = 100, verbose: bool = True):
+def run_pipeline(
+    aqi_level: float = 50.0,
+    n_patients: int = 100,
+    verbose: bool = True,
+    extra_df=None,
+):
     """
     Full pipeline: data → encrypt → QSVM → QUBO → SA → allocation.
     Returns dict with all results for dashboard consumption.
+
+    extra_df: optional pd.DataFrame of manually-added patients (same columns as
+              FEATURE_COLS + 'label' + 'patient_id') to append before QSVM scoring.
     """
+    import pandas as _pd
 
     # ── 1. Generate + encrypt patient data ───────────────────────────────
     df       = generate_patients(n=n_patients, aqi_level=aqi_level)
     staff_df = generate_staff()
+
+    # Inject manually-added patients (from the UI "Add Patient" form)
+    if extra_df is not None and len(extra_df) > 0:
+        df = _pd.concat([df, extra_df.copy()], ignore_index=True)
+        n_patients = len(df)
+
     X        = df[FEATURE_COLS].values
     y        = df["label"].values
 
@@ -130,8 +145,8 @@ def run_pipeline(aqi_level: float = 50.0, n_patients: int = 100, verbose: bool =
     stage1_solve_ms = round((time.perf_counter() - t0_stage1) * 1000, 1)
     quantum_allocation = parse_allocation(sample, urgency_scores)
 
-    # Greedy fallback: ensure SA-missed patients get a bed if capacity allows
-    quantum_allocation = fill_unallocated(
+    # Greedy fallback + strict capacity enforcement: now returns (allocation, unallocated)
+    quantum_allocation, unallocated_records = fill_unallocated(
         quantum_allocation, n_patients, urgency_scores
     )
 
@@ -143,22 +158,28 @@ def run_pipeline(aqi_level: float = 50.0, n_patients: int = 100, verbose: bool =
         if alloc.get("fallback"):
             alloc["reason"] += "  [greedy placed]"
 
-    # Build waitlist: patients with no bed after fill (truly over capacity)
-    allocated_idxs = {a["patient_idx"] for a in quantum_allocation}
-    ward_occ = {r: sum(1 for a in quantum_allocation if a["resource_idx"] == r)
-                for r in range(3)}
-    from data.generator import RESOURCE_CAPACITY as _RC, RESOURCE_NAMES as _RN
-    full_wards = [_RN[r] for r, occ in ward_occ.items() if occ >= _RC[r]]
-    waitlist = [
-        {
-            "patient_idx": p,
-            "patient_id":  df.iloc[p]["patient_id"],
-            "urgency":     round(float(urgency_scores[p]), 4),
-            "reason":      "Waiting — " + (", ".join(f"{w} full" for w in full_wards)
-                           if full_wards else "pending bed assignment"),
-        }
-        for p in range(n_patients) if p not in allocated_idxs
-    ]
+    # Build waitlist from unallocated records
+    waitlist = []
+    for unalloc in unallocated_records:
+        p = unalloc["patient_idx"]
+        if unalloc.get("displaced"):
+            reason = (f"\u2b07\ufe0f Bumped \u2014 displaced by critical patient "
+                      f"(urgency {unalloc['displaced_by_urgency']:.3f})")
+        else:
+            reason = "\u23f3 All beds full \u2014 no capacity available"
+        waitlist.append({
+            "patient_idx":          p,
+            "patient_id":           df.iloc[p]["patient_id"],
+            "urgency":              unalloc["urgency"],
+            "reason":               reason,
+            "displaced":            unalloc.get("displaced", False),
+            "displaced_by_urgency": unalloc.get("displaced_by_urgency"),
+        })
+    
+    if verbose and waitlist:
+        print(f"\n    ⚠️  {len(waitlist)} patients on waitlist (insufficient bed capacity)")
+        for w in waitlist:
+            print(f"       {w['patient_id']} (urgency {w['urgency']:.4f}) — {w['reason']}")
 
     # ── 4b. Stage 2 QUBO — Staff Assignment ──────────────────────────────
     if verbose:
@@ -195,7 +216,7 @@ def run_pipeline(aqi_level: float = 50.0, n_patients: int = 100, verbose: bool =
     c_util  = compute_utilization(classical_allocation)
 
     unallocated_classical = sum(1 for r in classical_allocation if r["resource_name"] == "⚠️ Unallocated")
-    unallocated_quantum   = sum(1 for r in quantum_allocation   if r["resource_name"] == "⚠️ Unallocated")
+    unallocated_quantum   = len(waitlist)  # From our strict capacity check
 
     # ── 7. QAOA circuit (demo: 2 patients × 3 resources = 6 qubits) ──────
     if verbose:

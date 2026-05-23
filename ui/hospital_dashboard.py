@@ -147,6 +147,16 @@ body {
     box-shadow: 4px 4px 0px #2d3436;
 }
 
+.unallocated-card {
+    background: #fef3c7;
+    border: 3px solid #f59e0b;
+    border-left: 8px solid #f59e0b;
+    border-radius: 14px;
+    padding: 12px 16px;
+    margin-bottom: 10px;
+    box-shadow: 4px 4px 0px #2d3436;
+}
+
 .fallback-badge {
     font-size: 0.6rem;
     background: #f1c40f;
@@ -173,9 +183,10 @@ def metric_card(title, value, subtitle="", color="#ff6b6b", icon=""):
         html.Div(subtitle, style={"color": "#636e72", "fontSize": "0.8rem", "marginTop": "8px", "fontWeight": "500"}),
     ]), className="command-card"), width=3)
 
-def bed_card(patient_id, urgency, bp, spo2, hr=0.0, gcs=0.0, lactate=0.0, reason="", is_fallback=False):
+def bed_card(patient_id, urgency, bp, spo2, hr=0.0, gcs=0.0, lactate=0.0, reason="", is_fallback=False, is_new=False):
     is_critical = urgency >= 0.7
     pulse_class = "pulse-critical" if is_critical else ""
+    new_class   = "bed-card-new"   if is_new       else ""
 
     gcs_color     = "#ff6b6b" if gcs > 0.33    else "#2d3436"
     lactate_color = "#ff6b6b" if lactate > 0.50 else "#2d3436"
@@ -184,7 +195,10 @@ def bed_card(patient_id, urgency, bp, spo2, hr=0.0, gcs=0.0, lactate=0.0, reason
         html.Div([
             html.Div([
                 html.Small("PATIENT ID", style={"fontSize": "0.6rem", "color": "#636e72", "display": "block", "fontWeight": "700"}),
-                html.Div(patient_id, style={"fontWeight": "700", "fontSize": "1.1rem"}),
+                html.Div([
+                    html.Span(patient_id, style={"fontWeight": "700", "fontSize": "1.1rem"}),
+                    html.Span("✨ NEW", className="new-badge") if is_new else None,
+                ], className="d-flex align-items-center"),
             ]),
             html.Div([
                 html.Small("URGENCY", style={"fontSize": "0.6rem", "color": "#636e72", "display": "block", "fontWeight": "700", "textAlign": "right"}),
@@ -223,10 +237,12 @@ def bed_card(patient_id, urgency, bp, spo2, hr=0.0, gcs=0.0, lactate=0.0, reason
             reason_bits.append(html.Span(" GREEDY PLACED", className="fallback-badge"))
         children.append(html.Div(reason_bits))
 
-    return html.Div(children, className=f"bed-card {pulse_class}")
+    return html.Div(children, className=f"bed-card {pulse_class} {new_class}")
 
-def resource_column(title, icon, color, capacity, assigned, df):
-    used = len(assigned)
+def resource_column(title, icon, color, capacity, assigned, df, latest_patient_id=None):
+    # Hard guard: never show more patients than capacity
+    used = min(len(assigned), capacity)
+    assigned = assigned[:used]
     cards = []
     for a in assigned:
         idx  = a["patient_idx"]
@@ -238,8 +254,9 @@ def resource_column(title, icon, color, capacity, assigned, df):
         lactate = float(df.loc[idx, "lactate"])        if (idx < len(df) and "lactate"       in df.columns)  else 0.0
         reason  = a.get("reason", "")
         is_fb   = a.get("fallback", False)
-        cards.append(bed_card(pid, a["urgency"], bp, spo2, hr, gcs, lactate, reason, is_fb))
-    
+        is_new  = (latest_patient_id is not None and pid == latest_patient_id)
+        cards.append(bed_card(pid, a["urgency"], bp, spo2, hr, gcs, lactate, reason, is_fb, is_new))
+
     free = capacity - used
     if free > 0:
         cards.append(html.Div([
@@ -258,13 +275,24 @@ def resource_column(title, icon, color, capacity, assigned, df):
                "background": "#f8f9fa",
            }))
 
+    # Badge colour: red = full, yellow = one bed left, green = available
+    if used >= capacity:
+        badge_color, badge_text_color = "danger", "white"
+        badge_label = f"{used}/{capacity} FULL"
+    elif used >= capacity - 1:
+        badge_color, badge_text_color = "warning", "dark"
+        badge_label = f"{used}/{capacity} — 1 bed left"
+    else:
+        badge_color, badge_text_color = "success", "white"
+        badge_label = f"{used}/{capacity}"
+
     return dbc.Col([
         html.Div([
             html.Div([
                 html.Span(icon, style={"fontSize": "1.3rem", "marginRight": "10px"}),
                 html.Span(title, style={"fontWeight": "700", "fontSize": "1rem", "color": "white"}),
             ]),
-            dbc.Badge(f"{used}/{capacity} FULL", color="light", text_color="dark",
+            dbc.Badge(badge_label, color=badge_color, text_color=badge_text_color,
                       style={"borderRadius": "8px", "fontWeight": "700"})
         ], style={
             "background": "#2d3436",
@@ -369,6 +397,23 @@ def waitlist_card(patient_id, urgency, reason, position):
         html.Div(reason or "Over capacity",
                  style={"fontSize": "0.75rem", "color": "#636e72", "fontStyle": "italic"}),
     ], className="waitlist-card")
+
+
+def unallocated_card(patient_id, urgency, position):
+    """Compact card for a patient who could not be allocated due to capacity limits."""
+    return html.Div([
+        html.Div([
+            dbc.Badge(f"#{position}", color="warning",
+                      style={"marginRight": "8px", "borderRadius": "6px",
+                             "fontFamily": "JetBrains Mono", "fontSize": "0.7rem"}),
+            html.Span(patient_id, style={"fontWeight": "700",
+                                         "fontFamily": "JetBrains Mono"}),
+        ], className="d-flex align-items-center mb-1"),
+        html.Div(f"Urgency: {urgency:.3f}",
+                 style={"fontSize": "0.8rem", "color": "#f59e0b", "fontWeight": "700"}),
+        html.Div("⏳ No bed available — insufficient capacity",
+                 style={"fontSize": "0.75rem", "color": "#636e72", "fontStyle": "italic"}),
+    ], className="unallocated-card")
 
 
 def staff_ward_column(title, icon, ward_name, ward_assignments, df_staff):
@@ -559,6 +604,64 @@ body {
     overflow-y: auto;
     line-height: 1.75;
 }
+
+/* ── Manual Patient Addition ── */
+.bed-card-new {
+    border: 3px solid #9b59b6 !important;
+    background: linear-gradient(135deg, #f5eeff 0%, #ffffff 100%) !important;
+    box-shadow: 4px 4px 0px #9b59b6 !important;
+    animation: new-glow 1.8s ease-in-out infinite;
+}
+
+@keyframes new-glow {
+    0%, 100% { box-shadow: 4px 4px 0px #9b59b6, 0 0 0px 0px rgba(155,89,182,0); }
+    50%       { box-shadow: 4px 4px 0px #9b59b6, 0 0 20px 6px rgba(155,89,182,0.35); }
+}
+
+.new-badge {
+    background: #9b59b6;
+    color: white;
+    border: 2px solid #2d3436;
+    border-radius: 6px;
+    padding: 1px 7px;
+    font-size: 0.58rem;
+    font-weight: 700;
+    margin-left: 6px;
+    letter-spacing: 0.05em;
+    vertical-align: middle;
+}
+
+.add-btn {
+    background: #9b59b6 !important;
+    border: 3px solid #2d3436 !important;
+    border-radius: 14px !important;
+    box-shadow: 6px 6px 0px #2d3436 !important;
+    color: white !important;
+    font-weight: 700 !important;
+    font-size: 1rem !important;
+    text-transform: uppercase;
+    transition: all 0.1s ease;
+}
+
+.add-btn:active {
+    transform: translate(2px, 2px);
+    box-shadow: 2px 2px 0px #2d3436 !important;
+}
+
+.allocation-result-banner {
+    background: linear-gradient(135deg, #f5eeff 0%, #fff 100%);
+    border: 4px solid #9b59b6;
+    border-radius: 18px;
+    box-shadow: 8px 8px 0 #2d3436;
+    padding: 24px 32px;
+    margin-top: 20px;
+}
+
+tr.patient-row-new td {
+    background: #f5eeff !important;
+    border-top: 2px solid #9b59b6 !important;
+    border-bottom: 2px solid #9b59b6 !important;
+}
 """
 
 import datetime
@@ -595,6 +698,7 @@ app.index_string = app.index_string.replace(
 
 app.layout = html.Div([
     dcc.Store(id="pipeline-store"),
+    dcc.Store(id="manual-counter", data=0),
 
     # ── Global loading overlay (visible while run_and_store executes) ────
     dcc.Loading(
@@ -825,6 +929,117 @@ app.layout = html.Div([
                         html.Div(id="log-panel"),
                     ], style={"paddingTop": "20px"}),
                 ),
+
+                # ── Tab 06 — Add Patient ──────────────────────────────
+                dbc.Tab(
+                    label="➕  Add Patient",
+                    tab_id="tab-add-patient",
+                    label_style={"fontWeight": "700", "fontSize": "0.85rem",
+                                 "color": "#9b59b6"},
+                    children=html.Div([
+                        section_header(
+                            6, "🧑‍⚕️", "Manual Patient Entry",
+                            "Enter a patient's vitals manually. The quantum pipeline will "
+                            "score their urgency and allocate them to the optimal ward. "
+                            "Make sure to run Optimize Now first so a baseline exists.",
+                        ),
+                        dbc.Card(dbc.CardBody([
+                            dbc.Row([
+                                # ── Left column: haemodynamic ──────────
+                                dbc.Col([
+                                    html.H6("❤️  Haemodynamic & Respiratory",
+                                            style={"fontWeight": "700", "color": "#2d3436",
+                                                   "marginBottom": "16px"}),
+                                    html.Label("BP Deviation  (0 = normal · 100 = max deviation)",
+                                               style={"fontSize": "0.8rem", "fontWeight": "700",
+                                                      "color": "#636e72"}),
+                                    dcc.Slider(id="inp-bp", min=0, max=100, step=1, value=20,
+                                               marks={0: "0", 50: "50", 100: "100"},
+                                               tooltip={"placement": "bottom", "always_visible": True},
+                                               className="mb-3"),
+                                    html.Label("SpO₂ Deficit  (0 = normal · 100 = severe hypoxia)",
+                                               style={"fontSize": "0.8rem", "fontWeight": "700",
+                                                      "color": "#636e72"}),
+                                    dcc.Slider(id="inp-spo2", min=0, max=100, step=1, value=10,
+                                               marks={0: "0", 50: "50", 100: "100"},
+                                               tooltip={"placement": "bottom", "always_visible": True},
+                                               className="mb-3"),
+                                    html.Label("Temperature Δ  (0 = afebrile · 100 = extreme)",
+                                               style={"fontSize": "0.8rem", "fontWeight": "700",
+                                                      "color": "#636e72"}),
+                                    dcc.Slider(id="inp-temp", min=0, max=100, step=1, value=15,
+                                               marks={0: "0", 50: "50", 100: "100"},
+                                               tooltip={"placement": "bottom", "always_visible": True},
+                                               className="mb-3"),
+                                    html.Label("AQI Exposure  (0 = clean air · 100 = hazardous PM2.5)",
+                                               style={"fontSize": "0.8rem", "fontWeight": "700",
+                                                      "color": "#636e72"}),
+                                    dcc.Slider(id="inp-aqi", min=0, max=100, step=1, value=10,
+                                               marks={0: "0", 50: "50", 100: "100"},
+                                               tooltip={"placement": "bottom", "always_visible": True},
+                                               className="mb-3"),
+                                ], width=6),
+                                # ── Right column: neurological / shock ─
+                                dbc.Col([
+                                    html.H6("🧠  Neurological & Shock Markers",
+                                            style={"fontWeight": "700", "color": "#2d3436",
+                                                   "marginBottom": "16px"}),
+                                    html.Label("HR Deviation  (0 = normal · 100 = extreme tachycardia)",
+                                               style={"fontSize": "0.8rem", "fontWeight": "700",
+                                                      "color": "#636e72"}),
+                                    dcc.Slider(id="inp-hr", min=0, max=100, step=1, value=20,
+                                               marks={0: "0", 50: "50", 100: "100"},
+                                               tooltip={"placement": "bottom", "always_visible": True},
+                                               className="mb-3"),
+                                    html.Label("Resp Rate  (0 = normal · 100 = severe tachypnoea)",
+                                               style={"fontSize": "0.8rem", "fontWeight": "700",
+                                                      "color": "#636e72"}),
+                                    dcc.Slider(id="inp-resp", min=0, max=100, step=1, value=20,
+                                               marks={0: "0", 50: "50", 100: "100"},
+                                               tooltip={"placement": "bottom", "always_visible": True},
+                                               className="mb-3"),
+                                    html.Label("GCS Deficit  (0 = alert · 100 = deep coma)",
+                                               style={"fontSize": "0.8rem", "fontWeight": "700",
+                                                      "color": "#636e72"}),
+                                    dcc.Slider(id="inp-gcs", min=0, max=100, step=1, value=5,
+                                               marks={0: "0", 33: "coma", 100: "100"},
+                                               tooltip={"placement": "bottom", "always_visible": True},
+                                               className="mb-3"),
+                                    html.Label("Lactate  (0 = normal · 100 = severe shock / hypoperfusion)",
+                                               style={"fontSize": "0.8rem", "fontWeight": "700",
+                                                      "color": "#636e72"}),
+                                    dcc.Slider(id="inp-lactate", min=0, max=100, step=1, value=10,
+                                               marks={0: "0", 50: "shock", 100: "100"},
+                                               tooltip={"placement": "bottom", "always_visible": True},
+                                               className="mb-3"),
+                                ], width=6),
+                            ]),
+                            html.Hr(),
+                            dbc.Row([
+                                dbc.Col([
+                                    html.Label("Patient Name / ID  (optional — auto-assigned if blank)",
+                                               style={"fontSize": "0.8rem", "fontWeight": "700",
+                                                      "color": "#636e72"}),
+                                    dbc.Input(id="inp-patient-name", type="text",
+                                              placeholder="e.g. John Doe or leave blank",
+                                              style={"border": "3px solid #2d3436",
+                                                     "borderRadius": "10px",
+                                                     "fontFamily": "JetBrains Mono",
+                                                     "fontSize": "0.85rem",
+                                                     "fontWeight": "600"}),
+                                ], width=6),
+                                dbc.Col([
+                                    dbc.Button("🚑  Add Patient to Queue",
+                                               id="add-patient-btn",
+                                               className="add-btn w-100 py-3",
+                                               style={"marginTop": "1.6rem"}),
+                                ], width=6),
+                            ]),
+                        ]), className="command-card mb-3"),
+                        # ── Allocation result banner (updated by update_ui) ──
+                        html.Div(id="add-patient-result"),
+                    ], style={"paddingTop": "20px"}),
+                ),
             ],
         ),
 
@@ -840,18 +1055,78 @@ app.layout = html.Div([
 @app.callback(
     Output("pipeline-store", "data"),
     Output("loading-trigger", "children"),
+    Output("manual-counter", "data"),
     Input("run-btn", "n_clicks"),
+    Input("add-patient-btn", "n_clicks"),
     State("aqi-slider", "value"),
     State("patients-slider", "value"),
+    State("inp-bp",      "value"),
+    State("inp-spo2",    "value"),
+    State("inp-temp",    "value"),
+    State("inp-aqi",     "value"),
+    State("inp-hr",      "value"),
+    State("inp-resp",    "value"),
+    State("inp-gcs",     "value"),
+    State("inp-lactate", "value"),
+    State("inp-patient-name", "value"),
+    State("manual-counter", "data"),
+    State("pipeline-store", "data"),
     prevent_initial_call=True,
 )
-def run_and_store(_, aqi, n_patients):
+def run_and_store(
+    _run, _add,
+    aqi, n_patients,
+    bp, spo2, temp, aqi_inp, hr, resp, gcs, lactate,
+    patient_name, counter, existing_store,
+):
+    import pandas as _pd
+    ctx = dash.callback_context
+    triggered_id = ctx.triggered_id
+
+    extra_df          = None
+    latest_patient_id = None
+    new_counter       = counter or 0
+
+    if triggered_id == "add-patient-btn":
+        # Build the manual patient row
+        new_counter += 1
+        raw_name = (patient_name or "").strip()
+        pid = raw_name if raw_name else f"MANUAL-{new_counter:03d}"
+        latest_patient_id = pid
+
+        def _v(x):  # slider 0-100 → 0.0-1.0, default 0
+            return float(x or 0) / 100.0
+
+        new_row = {
+            "bp_deviation":      _v(bp),
+            "spo2_deficit":      _v(spo2),
+            "temperature_delta": _v(temp),
+            "aqi_pm25":          _v(aqi_inp),
+            "hr_deviation":      _v(hr),
+            "resp_rate":         _v(resp),
+            "gcs_deficit":       _v(gcs),
+            "lactate":           _v(lactate),
+            "label":             1,
+            "patient_id":        pid,
+        }
+        extra_df = _pd.DataFrame([new_row])
+
+        # If we already have a run, keep existing n_patients & aqi
+        if existing_store is not None:
+            aqi        = existing_store.get("aqi", aqi)
+            n_patients = existing_store.get("n_patients", n_patients)
+
     t0 = time.time()
     log_buf = io.StringIO()
     _old_stdout = sys.stdout
     sys.stdout = log_buf
     try:
-        results = run_pipeline(aqi_level=float(aqi), n_patients=int(n_patients), verbose=True)
+        results = run_pipeline(
+            aqi_level=float(aqi),
+            n_patients=int(n_patients),
+            verbose=True,
+            extra_df=extra_df,
+        )
     finally:
         sys.stdout = _old_stdout
     elapsed = round(time.time() - t0, 1)
@@ -880,7 +1155,8 @@ def run_and_store(_, aqi, n_patients):
         "waitlist":         results.get("waitlist", []),
         "log_text":         log_text,
         "elapsed":          elapsed,
-    }, ""
+        "latest_patient_id": latest_patient_id,
+    }, "", new_counter
 
 
 @app.callback(
@@ -891,13 +1167,13 @@ def run_and_store(_, aqi, n_patients):
     Output("staff-grid", "children"),
     Output("last-update", "children"),
     Output("log-panel", "children"),
+    Output("add-patient-result", "children"),
     Input("pipeline-store", "data"),
 )
 def update_ui(data):
     if data is None:
         # Show pipeline overview while waiting
-        overview = dbc.Card(dbc.CardBody([
-            html.H5("How the pipeline works",
+        overview = dbc.Card(dbc.CardBody([            html.H5("How the pipeline works",
                     style={"fontWeight": "700", "color": "#2d3436", "marginBottom": "16px"}),
             *[
                 html.Div([
@@ -929,7 +1205,7 @@ def update_ui(data):
                    style={"color": "#636e72", "fontSize": "0.85rem",
                           "margin": "8px 0 0 0", "fontStyle": "italic"}),
         ]), className="command-card")
-        return [], overview, [], [], [], "", None
+        return [], overview, [], [], [], "", None, None
 
     df       = pd.read_json(io.StringIO(data["df"]), orient="split")
     q_alloc  = data["q_alloc"]
@@ -939,6 +1215,7 @@ def update_ui(data):
     sm       = data.get("staff_metrics", {})
     s_alloc  = data.get("staff_allocation", [])
     waitlist = data.get("waitlist", [])
+    latest_patient_id = data.get("latest_patient_id")
 
     # ── Metric cards ─────────────────────────────────────────────────────
     urgencies = [a["urgency"] for a in q_alloc]
@@ -953,31 +1230,46 @@ def update_ui(data):
     ]
 
     # ── Bed grid ─────────────────────────────────────────────────────────
+    # Compute effective capacity per ward: min(hospital_capacity, batch_size)
+    # This prevents over-allocation when batch < hospital capacity
+    effective_capacity = [
+        min(RESOURCE_CAPACITY[0], n),
+        min(RESOURCE_CAPACITY[1], n),
+        min(RESOURCE_CAPACITY[2], n),
+    ]
     resource_cfg = [
-        (0, "ICU / Trauma",    "🏥", "#ff6b6b", RESOURCE_CAPACITY[0]),
-        (1, "Vent Unit",       "🫁", "#f1c40f", RESOURCE_CAPACITY[1]),
-        (2, "General Ward",    "🛏️",  "#1abc9c", RESOURCE_CAPACITY[2]),
+        (0, "ICU / Trauma",    "🏥", "#ff6b6b", effective_capacity[0]),
+        (1, "Vent Unit",       "🫁", "#f1c40f", effective_capacity[1]),
+        (2, "General Ward",    "🛏️",  "#1abc9c", effective_capacity[2]),
     ]
     cols = []
     for ridx, title, icon, color, cap in resource_cfg:
         assigned = [a for a in q_alloc if a.get("resource_idx") == ridx]
-        cols.append(resource_column(title, icon, color, cap, assigned, df))
+        cols.append(resource_column(title, icon, color, cap, assigned, df, latest_patient_id))
 
     bed_grid = html.Div([
         dbc.Row(cols, className="mb-3"),
-        # Waitlist panel (only shown when there are truly over-capacity patients)
+        # Unallocated patients panel (strict capacity — no beds available)
         html.Div([
             html.Div([
-                html.Span("⏳", style={"fontSize": "1.2rem", "marginRight": "8px"}),
-                html.Span("PATIENT WAITLIST", style={"fontWeight": "700", "color": "#ff6b6b",
-                                                      "fontSize": "0.9rem", "textTransform": "uppercase"}),
-                dbc.Badge(f"{len(waitlist)} waiting", color="danger",
+                html.Span("⚠️", style={"fontSize": "1.2rem", "marginRight": "8px"}),
+                html.Span("UNALLOCATED PATIENTS", style={"fontWeight": "700", "color": "#f59e0b",
+                                                         "fontSize": "0.9rem", "textTransform": "uppercase"}),
+                dbc.Badge(f"{len(waitlist)} no capacity", color="warning",
                           style={"marginLeft": "10px", "borderRadius": "8px", "fontWeight": "700"}),
             ], className="d-flex align-items-center mb-3"),
             dbc.Row([
-                dbc.Col(waitlist_card(w["patient_id"], w["urgency"], w["reason"], i + 1), width=4)
+                dbc.Col(unallocated_card(
+                    w["patient_id"], w["urgency"], i + 1,
+                    displaced=w.get("displaced", False),
+                    displaced_by_urgency=w.get("displaced_by_urgency"),
+                ), width=4)
                 for i, w in enumerate(waitlist)
             ]),
+            html.P([
+                html.Span(f"All beds are at capacity: ICU {effective_capacity[0]}/filled, Vent {effective_capacity[1]}/filled, General {effective_capacity[2]}/filled. ", style={"fontSize": "0.75rem"}),
+                html.Span("These patients are on the waitlist — awaiting discharge or emergency bed availability.", style={"fontSize": "0.75rem", "fontWeight": "600", "color": "#f59e0b"}),
+            ], style={"marginTop": "12px", "padding": "10px", "background": "#fef3c7", "borderRadius": "8px", "border": "1px solid #f59e0b"}),
         ], style={"display": "block" if waitlist else "none"}),
     ])
 
@@ -986,12 +1278,18 @@ def update_ui(data):
     for _, row in df.iterrows():
         u = float(row["urgency_score"])
         is_critical = u >= 0.7
+        is_new_row  = (latest_patient_id is not None and row["patient_id"] == latest_patient_id)
         q_res = next(
             (a["resource_name"] for a in q_alloc if a["patient_idx"] == row.name),
             "⚠️ UNALLOCATED",
         )
+        row_style = {"background": "#f5eeff"} if is_new_row else {}
+        pid_cell = html.Td([
+            html.Span(row["patient_id"], style={"fontWeight": "700", "fontFamily": "JetBrains Mono"}),
+            html.Span("✨ NEW", className="new-badge") if is_new_row else None,
+        ])
         rows.append(html.Tr([
-            html.Td(row["patient_id"],          style={"fontWeight": "700", "fontFamily": "JetBrains Mono"}),
+            pid_cell,
             html.Td(f"{row['bp_deviation']:.2f}"),
             html.Td(f"{1.0-row['spo2_deficit']:.2f}"),
             html.Td(f"{row.get('temperature_delta', 0):.2f}",
@@ -1008,8 +1306,9 @@ def update_ui(data):
             html.Td(dbc.Badge("URGENT" if is_critical else "STABLE", 
                               color="danger" if is_critical else "success",
                               style={"borderRadius": "8px"})),
-            html.Td(q_res, style={"fontWeight": "700", "color": "#1abc9c"}),
-        ]))
+            html.Td(q_res, style={"fontWeight": "700", "color": "#1abc9c" if not is_new_row else "#9b59b6"}),
+        ], style={"background": "#f5eeff", "borderTop": "2px solid #9b59b6",
+                  "borderBottom": "2px solid #9b59b6"} if is_new_row else {}))
 
     table = dbc.Table(
         [html.Thead(html.Tr([
@@ -1110,7 +1409,76 @@ def update_ui(data):
         html.Pre(log_text or "(no log output)", className="log-panel-box mb-0"),
     ]), className="command-card") if log_text else None
 
-    return cards, bed_grid, table, sec_panel, staff_grid, f"LIVE UPDATED: {ts}", log_panel
+    # ── Add-patient result banner ─────────────────────────────────────────
+    add_patient_result = None
+    if latest_patient_id:
+        # Find the allocation entry for this patient
+        new_alloc = next(
+            (a for a in q_alloc
+             if df.loc[a["patient_idx"], "patient_id"] == latest_patient_id
+             if a["patient_idx"] < len(df)),
+            None,
+        )
+        if new_alloc:
+            ward_name   = new_alloc.get("resource_name", "Unknown Ward")
+            urgency_val = new_alloc.get("urgency", 0.0)
+            reason_txt  = new_alloc.get("reason", "")
+            ward_icon   = {"ICU / Trauma": "🏥", "Ventilator Unit": "🫁", "General Ward": "🛏️"}.get(ward_name, "🏨")
+            is_crit     = urgency_val >= 0.7
+            add_patient_result = html.Div([
+                html.Div([
+                    html.Span("✅ Patient Added & Allocated",
+                              style={"fontWeight": "700", "fontSize": "1.1rem",
+                                     "color": "#9b59b6"}),
+                ], className="mb-3"),
+                dbc.Row([
+                    dbc.Col([
+                        html.Small("PATIENT ID", style={"fontSize": "0.7rem", "color": "#636e72",
+                                                         "fontWeight": "700", "display": "block"}),
+                        html.Div([
+                            html.Span(latest_patient_id,
+                                      style={"fontWeight": "700", "fontFamily": "JetBrains Mono",
+                                             "fontSize": "1.4rem"}),
+                            html.Span("✨ NEW", className="new-badge ms-2"),
+                        ], className="d-flex align-items-center"),
+                    ], width=4),
+                    dbc.Col([
+                        html.Small("ALLOCATED TO", style={"fontSize": "0.7rem", "color": "#636e72",
+                                                           "fontWeight": "700", "display": "block"}),
+                        html.Div([
+                            html.Span(ward_icon, style={"fontSize": "1.6rem", "marginRight": "8px"}),
+                            html.Span(ward_name, style={"fontWeight": "700", "fontSize": "1.2rem",
+                                                         "color": "#9b59b6"}),
+                        ], className="d-flex align-items-center"),
+                    ], width=4),
+                    dbc.Col([
+                        html.Small("URGENCY SCORE", style={"fontSize": "0.7rem", "color": "#636e72",
+                                                             "fontWeight": "700", "display": "block"}),
+                        html.Div(f"{urgency_val:.3f}", style={
+                            "fontWeight": "700", "fontSize": "1.6rem",
+                            "color": "#ff6b6b" if is_crit else "#2d3436",
+                            "fontFamily": "JetBrains Mono",
+                        }),
+                        dbc.Badge("CRITICAL — ICU PRIORITY" if is_crit else "STABLE",
+                                  color="danger" if is_crit else "success",
+                                  style={"borderRadius": "8px", "marginTop": "4px"}),
+                    ], width=4),
+                ]),
+                html.Hr(style={"borderColor": "#9b59b6", "opacity": "0.3", "margin": "14px 0"}),
+                html.Small(reason_txt or "Quantum allocation complete.",
+                           style={"color": "#636e72", "fontStyle": "italic",
+                                  "fontFamily": "JetBrains Mono", "fontSize": "0.78rem"}),
+                html.Div([
+                    html.Small("→ Switch to  ",
+                               style={"color": "#636e72", "fontSize": "0.8rem"}),
+                    html.Strong("🏢 Bed Allocation",
+                                style={"color": "#9b59b6", "fontSize": "0.8rem"}),
+                    html.Small("  tab to see the highlighted bed card.",
+                               style={"color": "#636e72", "fontSize": "0.8rem"}),
+                ], className="mt-2"),
+            ], className="allocation-result-banner")
+
+    return cards, bed_grid, table, sec_panel, staff_grid, f"LIVE UPDATED: {ts}", log_panel, add_patient_result
 
 
 # ── Entry ─────────────────────────────────────────────────────────────────────

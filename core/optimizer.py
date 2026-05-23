@@ -126,22 +126,53 @@ def solve_qubo(Q_or_tuple, num_reads: int = 200) -> dict:
     return result.first.sample
 
 
-def parse_allocation(sample: dict, urgency_scores: np.ndarray) -> list[dict]:
+def parse_allocation(sample: dict, urgency_scores: np.ndarray,
+                     resource_capacity: list = RESOURCE_CAPACITY) -> list[dict]:
     """
     Converts flat binary sample back into human-readable allocation rows.
+
+    Two hard constraints enforced here (SA may violate the soft QUBO penalties):
+      1. One resource per patient — if SA assigned the same patient to multiple
+         wards, keep only the highest-urgency resource match.
+      2. Ward capacity — if a ward is over-assigned, keep only the top-urgency
+         patients up to RESOURCE_CAPACITY[r].  Excess patients fall through to
+         fill_unallocated() for greedy reassignment.
     """
-    rows = []
+    # Collect all active assignments sorted highest-urgency first
+    raw: list[dict] = []
     for var, active in sample.items():
         if active == 1:
-            p, r = int(var.split("_")[0][1:]), int(var.split("_")[1][1:])
-            rows.append({
-                "patient_idx": p,
+            p = int(var.split("_")[0][1:])
+            r = int(var.split("_")[1][1:])
+            raw.append({
+                "patient_idx":  p,
                 "resource_idx": r,
                 "resource_name": RESOURCE_NAMES.get(r, f"Resource {r}"),
-                "urgency": round(float(urgency_scores[p]), 4),
-                "fallback": False,
+                "urgency":      round(float(urgency_scores[p]), 4),
+                "fallback":     False,
             })
-    return sorted(rows, key=lambda x: x["urgency"], reverse=True)
+    raw.sort(key=lambda x: x["urgency"], reverse=True)
+
+    # ── 1. Deduplicate: one assignment per patient (highest urgency ward wins)
+    seen_patients: set[int] = set()
+    deduped: list[dict] = []
+    for row in raw:
+        if row["patient_idx"] not in seen_patients:
+            deduped.append(row)
+            seen_patients.add(row["patient_idx"])
+
+    # ── 2. Hard capacity cap per ward
+    ward_counts: dict[int, int] = {}
+    allocation: list[dict] = []
+    for row in deduped:
+        r   = row["resource_idx"]
+        cap = resource_capacity[r] if r < len(resource_capacity) else 0
+        if ward_counts.get(r, 0) < cap:
+            allocation.append(row)
+            ward_counts[r] = ward_counts.get(r, 0) + 1
+        # else: over-capacity — fill_unallocated() will reassign this patient
+
+    return allocation
 
 
 def fill_unallocated(
@@ -149,27 +180,40 @@ def fill_unallocated(
     n_patients: int,
     urgency_scores: np.ndarray,
     resource_capacity: list = RESOURCE_CAPACITY,
-) -> list[dict]:
+) -> tuple[list[dict], list[dict]]:
     """
-    Greedy post-processing: assign any SA-missed patients to the best ward
-    that still has spare capacity.  Patients are processed highest-urgency first.
+    Greedy post-processing with triage preemption.
 
-    Urgency tiers → preferred ward order:
-      ≥ 0.70  →  ICU  → Vent  → General
-      ≥ 0.40  →  Vent → ICU   → General
-      < 0.40  →  General → Vent → ICU
+    Phase 1 — Free-bed assignment:
+      Unallocated patients (highest urgency first) fill any spare beds in
+      their preferred ward order.
+
+    Phase 2 — Preemption:
+      If ALL beds are full but the incoming patient has strictly higher
+      urgency than any current occupant, they BUMP the lowest-urgency
+      occupant.  Bumped patients go onto the waitlist — a higher-acuity
+      patient needs the bed.
+
+    Returns: (allocated_list, unallocated_records)
     """
     allocated   = {a["patient_idx"] for a in allocation}
     ward_counts = {r: sum(1 for a in allocation if a["resource_idx"] == r)
                    for r in range(len(resource_capacity))}
 
-    unallocated = sorted(
+    # Clamp ward capacity to batch size
+    effective_capacity = {r: min(resource_capacity[r], n_patients)
+                          for r in range(len(resource_capacity))}
+
+    unallocated_list = sorted(
         [p for p in range(n_patients) if p not in allocated],
         key=lambda p: urgency_scores[p],
         reverse=True,
     )
 
-    for p in unallocated:
+    # Waitlist entries: {patient_idx, urgency, displaced, displaced_by_urgency}
+    waitlist_entries: list[dict] = []
+
+    for p in unallocated_list:
         u = float(urgency_scores[p])
         if u >= 0.70:
             preference = [0, 1, 2]
@@ -178,16 +222,62 @@ def fill_unallocated(
         else:
             preference = [2, 1, 0]
 
+        # ── Phase 1: fill a free bed ──────────────────────────────────────
+        assigned = False
         for r in preference:
-            if r < len(resource_capacity) and ward_counts.get(r, 0) < resource_capacity[r]:
+            if (r < len(effective_capacity) and
+                    ward_counts.get(r, 0) < effective_capacity[r]):
                 allocation.append({
                     "patient_idx":   p,
                     "resource_idx":  r,
                     "resource_name": RESOURCE_NAMES.get(r, f"Resource {r}"),
                     "urgency":       round(u, 4),
-                    "fallback":      True,   # SA missed this; greedy placed it
+                    "fallback":      True,
                 })
                 ward_counts[r] = ward_counts.get(r, 0) + 1
+                assigned = True
                 break
 
-    return sorted(allocation, key=lambda x: x["urgency"], reverse=True)
+        # ── Phase 2: preemption — bump the lowest-urgency occupant ───────
+        if not assigned:
+            # All preferred wards are full; find the lowest-urgency occupant
+            # across those wards whose urgency is strictly below ours
+            candidates = [
+                (i, a) for i, a in enumerate(allocation)
+                if a["resource_idx"] in preference
+                and float(a["urgency"]) < u
+            ]
+            if candidates:
+                worst_i, worst = min(candidates, key=lambda x: float(x[1]["urgency"]))
+                bumped_p   = worst["patient_idx"]
+                bumped_r   = worst["resource_idx"]
+                bumped_u   = worst["urgency"]
+
+                # Swap: remove bumped patient, place incoming in same ward
+                allocation.pop(worst_i)
+                allocation.append({
+                    "patient_idx":   p,
+                    "resource_idx":  bumped_r,
+                    "resource_name": RESOURCE_NAMES.get(bumped_r, f"Resource {bumped_r}"),
+                    "urgency":       round(u, 4),
+                    "fallback":      True,
+                    "preempted":     True,
+                })
+                # ward_counts unchanged (one out, one in, same ward)
+                assigned = True
+
+                waitlist_entries.append({
+                    "patient_idx":          bumped_p,
+                    "urgency":              bumped_u,
+                    "displaced":            True,
+                    "displaced_by_urgency": round(u, 4),
+                })
+
+        if not assigned:
+            waitlist_entries.append({
+                "patient_idx": p,
+                "urgency":     round(u, 4),
+                "displaced":   False,
+            })
+
+    return sorted(allocation, key=lambda x: x["urgency"], reverse=True), waitlist_entries
