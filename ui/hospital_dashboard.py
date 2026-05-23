@@ -240,10 +240,23 @@ def resource_column(title, icon, color, capacity, assigned, df):
         is_fb   = a.get("fallback", False)
         cards.append(bed_card(pid, a["urgency"], bp, spo2, hr, gcs, lactate, reason, is_fb))
     
-    for _ in range(capacity - used):
+    free = capacity - used
+    if free > 0:
         cards.append(html.Div([
-            html.Div("FREE BED", style={"fontSize": "0.7rem", "fontWeight": "700", "color": "#b2bec3"})
-        ], className="empty-bed d-flex align-items-center justify-content-center"))
+            html.Span("🛏️", style={"fontSize": "1.4rem", "marginRight": "10px"}),
+            html.Span(f"{free}", style={
+                "fontFamily": "JetBrains Mono", "fontWeight": "700",
+                "fontSize": "1.6rem", "color": "#b2bec3", "lineHeight": "1",
+            }),
+            html.Span(f"  free bed{'s' if free != 1 else ''}", style={
+                "fontSize": "0.8rem", "color": "#b2bec3", "fontWeight": "600",
+            }),
+        ], className="d-flex align-items-center justify-content-center",
+           style={
+               "border": "2px dashed #dfe6e9", "borderRadius": "12px",
+               "padding": "16px", "margin": "4px 0",
+               "background": "#f8f9fa",
+           }))
 
     return dbc.Col([
         html.Div([
@@ -665,83 +678,118 @@ app.layout = html.Div([
         # ── KPI snapshot ──────────────────────────────────────────────────
         dbc.Row(id="metric-cards", className="mb-3"),
 
-        html.Hr(style={"borderColor": "#dfe6e9", "borderWidth": "2px", "margin": "20px 0"}),
+        # ── Tabbed sections ──────────────────────────────────────────────
+        dbc.Tabs(
+            id="main-tabs",
+            active_tab="tab-beds",
+            className="mb-0",
+            style={"borderBottom": "2px solid #dfe6e9", "marginTop": "8px"},
+            children=[
 
-        # ── 01 — Quantum Bed Allocation ──────────────────────────────────
-        section_header(
-            1, "\U0001f3e8", "Quantum Bed Allocation",
-            "The QUBO optimizer scores every patient via the QSVM urgency model, "
-            "then assigns each to the most appropriate ward \u2014 ICU / Trauma, "
-            "Ventilator Unit, or General Ward.",
+                # ── Tab 01 — Beds ─────────────────────────────────────
+                dbc.Tab(
+                    label="\U0001f3e8  Bed Allocation",
+                    tab_id="tab-beds",
+                    label_style={"fontWeight": "700", "fontSize": "0.85rem"},
+                    children=html.Div([
+                        section_header(
+                            1, "\U0001f3e8", "Quantum Bed Allocation",
+                            "The QUBO optimizer scores every patient via the QSVM urgency model, "
+                            "then assigns each to the most appropriate ward \u2014 ICU / Trauma, "
+                            "Ventilator Unit, or General Ward.",
+                        ),
+                        dcc.Loading(
+                            id="loading-beds",
+                            type="cube",
+                            color="#ff6b6b",
+                            children=html.Div(id="bed-grid"),
+                        ),
+                    ], style={"paddingTop": "20px"}),
+                ),
+
+                # ── Tab 02 — Patients ─────────────────────────────────
+                dbc.Tab(
+                    label="\U0001f4cb  Patient Queue",
+                    tab_id="tab-patients",
+                    label_style={"fontWeight": "700", "fontSize": "0.85rem"},
+                    children=html.Div([
+                        section_header(
+                            2, "\U0001f4cb", "Patient Triage Queue",
+                            "All patients ranked by the QSVM urgency score (0\u20131). "
+                            "Red rows are critical (score \u2265 0.7) and are prioritised by the optimizer.",
+                        ),
+                        html.Div(
+                            "Column guide \u2014  "
+                            "BP \u0394: blood-pressure deviation  \u00b7  "
+                            "O\u2082 SAT: oxygen saturation  \u00b7  "
+                            "HR DEV: heart-rate deviation  \u00b7  "
+                            "RESP: respiratory rate  \u00b7  "
+                            "GCS \u25bc: Glasgow Coma Score deficit (higher = worse)  \u00b7  "
+                            "LACTATE: serum lactate (higher = worse)  \u00b7  "
+                            "SCORE: QSVM urgency 0\u20131",
+                            style={
+                                "background": "#f8f9fa", "border": "2px solid #dfe6e9",
+                                "borderRadius": "10px", "padding": "8px 14px",
+                                "fontSize": "0.76rem", "color": "#636e72",
+                                "fontFamily": "JetBrains Mono", "marginBottom": "12px",
+                                "lineHeight": "1.8",
+                            },
+                        ),
+                        html.Div(id="patient-table"),
+                    ], style={"paddingTop": "20px"}),
+                ),
+
+                # ── Tab 03 — Staff ────────────────────────────────────
+                dbc.Tab(
+                    label="\U0001f468\u200d\u2695\ufe0f  Staff Deployment",
+                    tab_id="tab-staff",
+                    label_style={"fontWeight": "700", "fontSize": "0.85rem"},
+                    children=html.Div([
+                        section_header(
+                            3, "\U0001f468\u200d\u2695\ufe0f", "Staff Deployment \u2014 QUBO Stage 2",
+                            "A second QUBO problem matches qualified clinical staff to each ward, "
+                            "balancing role requirements, skill level, and real-time fatigue scores.",
+                        ),
+                        dcc.Loading(
+                            id="loading-staff",
+                            type="cube",
+                            color="#1abc9c",
+                            children=html.Div(id="staff-grid"),
+                        ),
+                    ], style={"paddingTop": "20px"}),
+                ),
+
+                # ── Tab 04 — Security ─────────────────────────────────
+                dbc.Tab(
+                    label="\U0001f6e1\ufe0f  Security",
+                    tab_id="tab-security",
+                    label_style={"fontWeight": "700", "fontSize": "0.85rem"},
+                    children=html.Div([
+                        section_header(
+                            4, "\U0001f6e1\ufe0f", "Post-Quantum Encryption (NIST FIPS 203)",
+                            "Every patient record is encrypted on-device with ML-KEM-768 key exchange "
+                            "and AES-256-GCM symmetric encryption \u2014 resistant to future quantum attacks.",
+                        ),
+                        html.Div(id="security-panel"),
+                    ], style={"paddingTop": "20px"}),
+                ),
+
+                # ── Tab 05 — Log ──────────────────────────────────────
+                dbc.Tab(
+                    label="\U0001f4df  Pipeline Log",
+                    tab_id="tab-log",
+                    label_style={"fontWeight": "700", "fontSize": "0.85rem"},
+                    children=html.Div([
+                        section_header(
+                            5, "\U0001f4df", "Pipeline Log",
+                            "Raw verbose output of all 8 stages from the last optimization run. "
+                            "Use this to check timings and verify each algorithm step completed correctly.",
+                        ),
+                        html.Div(id="log-panel"),
+                    ], style={"paddingTop": "20px"}),
+                ),
+            ],
         ),
-        dcc.Loading(
-            id="loading-beds",
-            type="cube",
-            color="#ff6b6b",
-            children=html.Div(id="bed-grid"),
-        ),
-
-        html.Hr(style={"borderColor": "#dfe6e9", "borderWidth": "2px", "margin": "24px 0"}),
-
-        # ── 02 — Patient Triage Queue ────────────────────────────────────
-        section_header(
-            2, "\U0001f4cb", "Patient Triage Queue",
-            "All patients ranked by the QSVM urgency score (0\u20131). "
-            "Red rows are critical (score \u2265 0.7) and are prioritised by the optimizer.",
-        ),
-        html.Div(
-            "Column guide \u2014  "
-            "BP \u0394: blood-pressure deviation  \u00b7  "
-            "O\u2082 SAT: oxygen saturation  \u00b7  "
-            "HR DEV: heart-rate deviation  \u00b7  "
-            "RESP: respiratory rate  \u00b7  "
-            "GCS \u25bc: Glasgow Coma Score deficit (higher = worse)  \u00b7  "
-            "LACTATE: serum lactate (higher = worse)  \u00b7  "
-            "SCORE: QSVM urgency 0\u20131",
-            style={
-                "background": "#f8f9fa", "border": "2px solid #dfe6e9",
-                "borderRadius": "10px", "padding": "8px 14px",
-                "fontSize": "0.76rem", "color": "#636e72",
-                "fontFamily": "JetBrains Mono", "marginBottom": "12px",
-                "lineHeight": "1.8",
-            },
-        ),
-        html.Div(id="patient-table"),
-
-        html.Hr(style={"borderColor": "#dfe6e9", "borderWidth": "2px", "margin": "24px 0"}),
-
-        # ── 03 — Staff Deployment ────────────────────────────────────────
-        section_header(
-            3, "\U0001f468\u200d\u2695\ufe0f", "Staff Deployment \u2014 QUBO Stage 2",
-            "A second QUBO problem matches qualified clinical staff to each ward, "
-            "balancing role requirements, skill level, and real-time fatigue scores.",
-        ),
-        dcc.Loading(
-            id="loading-staff",
-            type="cube",
-            color="#1abc9c",
-            children=html.Div(id="staff-grid"),
-        ),
-
-        html.Hr(style={"borderColor": "#dfe6e9", "borderWidth": "2px", "margin": "24px 0"}),
-
-        # ── 04 — Post-Quantum Security ───────────────────────────────────
-        section_header(
-            4, "\U0001f6e1\ufe0f", "Post-Quantum Encryption (NIST FIPS 203)",
-            "Every patient record is encrypted on-device with ML-KEM-768 key exchange "
-            "and AES-256-GCM symmetric encryption \u2014 resistant to future quantum attacks.",
-        ),
-        html.Div(id="security-panel"),
-
-        html.Hr(style={"borderColor": "#dfe6e9", "borderWidth": "2px", "margin": "24px 0"}),
-
-        # ── 05 — Pipeline Log ────────────────────────────────────────────
-        section_header(
-            5, "\U0001f4df", "Pipeline Log",
-            "Raw verbose output of all 8 stages from the last optimization run. "
-            "Use this to check timings and verify each algorithm step completed correctly.",
-        ),
-        html.Div(id="log-panel"),
 
         html.Div(style={"height": "60px"}),
 

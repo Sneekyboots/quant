@@ -218,8 +218,16 @@ app.layout = html.Div([
             ], width=4),
             dbc.Col([
                 html.Label("👤  PATIENT COUNT", style={"color": DARK, "fontSize": "0.85rem", "fontWeight": "700"}),
-                dcc.Slider(id="q-pts",  min=10,  max=300,  step=10,  value=100,
-                           marks={4: "4", 8: "8", 12: "12", 16: "16", 20: "MAX"}),
+                html.Small(
+                    "⚠️  More patients = longer QSVM kernel computation",
+                    style={"color": "#f39c12", "display": "block",
+                           "marginBottom": "4px", "fontSize": "0.75rem", "fontWeight": "600"},
+                ),
+                html.Div(
+                    dcc.Slider(id="q-pts", min=10, max=300, step=10, value=100,
+                               marks={10: "10", 100: "100", 200: "200", 300: "300"}),
+                    style={"paddingRight": "20px"},
+                ),
             ], width=4),
             dbc.Col([
                 dbc.Button("EXPLODE PIPELINE ⚛️", id="q-run-btn", 
@@ -306,13 +314,40 @@ def q_run_pipeline(_, aqi, n_patients):
 )
 def render_tabs(data, active_tab):
     if data is None:
-        placeholder = dbc.Alert([
-            html.H4("QUANTUM CORE IS IDLE", className="alert-heading", style={"fontWeight": "700"}),
-            html.P("We need a surge simulation to start drawing kernel overlaps and QUBO landscapes!"),
-        ], color="danger", className="text-center py-5", style={
-            "border": "3px solid #2d3436", "borderRadius": "16px", "boxShadow": "8px 8px 0px #2d3436"
-        })
-        return [], placeholder
+        overview = dbc.Card(dbc.CardBody([
+            html.H5("What the quantum engine visualizes",
+                    style={"fontWeight": "700", "color": "#2d3436", "marginBottom": "16px"}),
+            *[
+                html.Div([
+                    html.Span(f"{n:02d}", style={
+                        "fontFamily": "JetBrains Mono", "fontWeight": "700",
+                        "fontSize": "0.8rem", "color": "#b2bec3",
+                        "border": "2px solid #dfe6e9", "borderRadius": "6px",
+                        "padding": "1px 7px", "marginRight": "10px",
+                    }),
+                    html.Span(icon + "  ", style={"fontSize": "1.1rem"}),
+                    html.Span(label, style={"fontWeight": "700", "color": "#2d3436",
+                                            "marginRight": "8px"}),
+                    html.Span(desc, style={"color": "#636e72", "fontSize": "0.82rem"}),
+                ], className="d-flex align-items-center mb-3")
+                for n, icon, label, desc in [
+                    (1, "⚛️",  "QSVM Kernel",
+                     "Heatmap of quantum kernel overlaps in Hilbert space + urgency vs classical RF"),
+                    (2, "🧩", "QUBO Matrix",
+                     "Ising spin-glass energy landscape for the bed-allocation optimisation problem"),
+                    (3, "🌀", "QAOA Circuit",
+                     "Variational quantum circuit diagram at p=1 Trotter depth"),
+                    (4, "📊", "Allocations",
+                     "Quantum vs classical assignment diff table and ward utilisation donuts"),
+                    (5, "👨\u200d⚕️", "Staff QUBO",
+                     "Stage 2 QUBO matrix and staff-to-ward assignment results"),
+                ]
+            ],
+            html.P("Set your parameters above and press EXPLODE PIPELINE to begin.",
+                   style={"color": "#636e72", "fontSize": "0.85rem",
+                          "margin": "8px 0 0 0", "fontStyle": "italic"}),
+        ]), className="command-card")
+        return [], overview
 
     df     = pd.read_json(io.StringIO(data["df"]), orient="split")
     alpha  = data["alpha"]
