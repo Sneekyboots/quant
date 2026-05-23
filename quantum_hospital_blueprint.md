@@ -123,7 +123,7 @@ We do NOT claim quantum speedup on a simulator. We claim:
 | Quantum UI | Dash (port 8051) | Kernel heatmap, QUBO matrix, QAOA circuit, alloc diff |
 | Map layer | Folium | Hospital network visualization (pending integration) |
 | Data | UCI Heart Disease + synthetic AQI | Real + India-relevant |
-| Security mock | PyNaCl (ML-KEM proxy) | Addresses #16 |
+| Post-quantum security | **liboqs 0.15.0** — real ML-KEM-768 (CRYSTALS-Kyber) via Open Quantum Safe | NIST FIPS 203 compliant, 14/14 smoke tests passing |
 
 ---
 
@@ -244,30 +244,69 @@ def fit(self, X, y):
 
 ---
 
-## 8. Dash Dashboard Features  *(Streamlit replaced)*
+## 8. Dash Dashboard Features  *(Streamlit replaced — fully updated May 2026)*
 
 ### Dashboard 1 — Hospital Command Center  (`ui/hospital_dashboard.py`, port 8050)
-Theme: `dbc.themes.CYBORG` dark command center.
+Theme: custom beige + Fredoka font — clean, presentable, judge-ready.
 
-1. **AQI Surge Slider + Patient Count** → on Run: calls `run_pipeline()` and updates everything
-2. **4 Metric Cards** — total patients, critical/high count, AQI level, security status
-3. **Bed Grid** — 3 columns (ICU / Ventilator / General Ward), each showing:
-   - Occupied beds as coloured patient cards (red=critical ≥0.7, orange=high ≥0.5, green=stable)
-   - Empty beds as dashed "AVAILABLE" placeholders
-   - Live used/capacity badge per column
-4. **Patient Intake Table** — BP dev., SpO₂ def., AQI factor, urgency, triage status, quantum assignment
-5. **Security Panel** — algorithm name, public key fingerprint, ciphertext preview, SHA-512 audit hash
+#### Controls (STEP 0)
+- **AQI / Smog Intensity slider** (0–500 PM2.5) with marks: Clear / Moderate / Surge
+- **Patient Intake Count slider** (10–300, step 10) — warns that larger counts extend QSVM kernel computation
+- **Optimize Now** button — triggers the full 8-stage pipeline
+
+#### Fullscreen Loading Spinner
+- `dcc.Loading(fullscreen=True, custom_spinner=...)` with a spinning ⚛️ atom animation
+- Spinner only appears during actual pipeline computation (not on page load)
+- `delay_show=100ms` prevents flash on fast runs
+
+#### KPI Cards (always visible after first run)
+| Card | What it shows |
+|---|---|
+| 👤 Live Queue | Patient count |
+| 🚨 Crisis Alert | Patients with urgency ≥ 0.7 |
+| 🧑‍⚕️ Skill Match | Stage 2 skill-acuity match score |
+| 🌫️ Smog Level | Current AQI input |
+
+#### Tabbed Sections (5 tabs — no more scrolling)
+| Tab | What it shows |
+|---|---|
+| 🏨 Bed Allocation (01) | QUBO bed assignment per ward — ICU / Vent / General. Occupied beds shown as patient cards; free beds shown as a single summary tile ("N free beds") instead of individual blank cards |
+| 📋 Patient Queue (02) | Full patient table sorted by QSVM urgency score. Column guide explains every abbreviation (BP Δ, O₂ SAT, HR DEV, GCS ▼, LACTATE, SCORE). Critical rows highlighted red |
+| 👨‍⚕️ Staff Deployment (03) | Stage 2 QUBO staff assignment — staff chips per ward with skill level, fatigue colour (fresh / ok / tired), staff utilisation metrics strip |
+| 🛡️ Security (04) | ML-KEM-768 public key fingerprint, NIST target, AES-256-GCM ciphertext preview, SHA-512 audit hash |
+| 📟 Pipeline Log (05) | Full captured stdout from the last run — timings per stage, solver output, encryption confirmation |
+
+#### Empty State (before first run)
+Clean overview card listing all 5 pipeline stages with plain-English descriptions — no red alerts.
+
+---
 
 ### Dashboard 2 — Quantum Engine Visualizer  (`ui/quantum_dashboard.py`, port 8051)
-Theme: custom dark CSS with purple quantum accents (`#a855f7`).
+Theme: beige + Fredoka, matching Hospital dashboard aesthetic.
 
-1. **Summary Bar** — QUBO variables, α value, kernel qubits, QAOA demo qubits, QSVM F1, RF F1
-2. **QSVM Tab** — N×N kernel heatmap (Plasma colorscale), QSVM vs RF urgency bar chart, F1 comparison
-3. **QUBO Tab** — full Q matrix heatmap (RdBu, zero-centered), diagonal bar chart, α/β/solver info cards
-4. **QAOA Tab** — rendered circuit PNG, demo vs full qubit counts, p-depth, hardware target, explanation
-5. **Allocation Tab** — side-by-side quantum vs classical tables, utilization donut charts, per-patient diff table
+#### Controls
+- **AQI slider** (0–500, marks: CLEAR / MID / SURGE)
+- **Patient Count slider** (10–300) — fixed broken marks (were `{4,8,12,16,20}` — now `{10,100,200,300}`), added `paddingRight` to prevent "300" label clipping
+- **EXPLODE PIPELINE** button
 
-Both dashboards use `dcc.Store` to cache results and `dcc.Loading` to handle the ~30s QSVM computation.
+#### Summary Bar (after first run — 6 info cards)
+`QUBO Nodes` · `α Penalty` · `QSVM F1` · `RF F1` · `Q-Kernel (N Qubits)` · `QAOA Ansatz`
+
+#### 5 Algorithm Tabs
+| Tab | Content |
+|---|---|
+| QSVM Kernel | N×N kernel overlap heatmap (YlOrRd) + QSVM vs RF urgency bar chart with critical threshold line |
+| QUBO Matrix | Full Q matrix heatmap (RdBu, zero-centred) + diagonal bar chart + α/β/solver info cards |
+| QAOA Circuit | Rendered circuit PNG (base64, PennyLane draw_mpl) + depth/qubit/hardware info |
+| Allocations | Quantum vs classical assignment tables, ward utilisation donut charts, per-patient diff table (MATCHED / ROTATED) |
+| Staff QUBO | Stage 2 QUBO heatmap + staff-to-ward assignment results + skill-acuity metrics |
+
+#### Empty State (before first run)
+Clean overview card listing all 5 tabs with descriptions — replaces old "QUANTUM CORE IS IDLE" red alert.
+
+---
+
+Both dashboards use `dcc.Store` to cache pipeline results between callbacks and `dcc.Loading` for the QSVM kernel computation (~15–30s depending on patient count).
 
 ---
 
@@ -309,20 +348,71 @@ Both dashboards use `dcc.Store` to cache results and `dcc.Loading` to handle the
 
 ---
 
-## 12. New Modules Added Post-Blueprint
+## 12. Modules — Current State
 
-| Module | Purpose | Problem |
+| Module | What it does | Status |
 |---|---|---|
-| `core/security.py` | `MLKEMProxy` — Curve25519-XSalsa20-Poly1305 encrypt/decrypt, SHA-512 audit hash | #16 |
-| `core/qaoa.py` | QAOA p=1 circuit: `qubo_to_ising`, `draw_qaoa_circuit` (base64 PNG), `circuit_info` | #18 |
-| `core/baseline.py` (+RF) | `random_forest_scores(X,y)` — RF urgency proba + macro F1 for benchmarking | #1 |
-| `ui/hospital_dashboard.py` | Dash command center — bed grid, patient cards, security panel | demo |
-| `ui/quantum_dashboard.py` | Dash algorithm viz — kernel heatmap, QUBO matrix, QAOA, alloc diff | demo |
+| `core/qsvm.py` | 4-qubit angle-embedding QSVM; exposes `K_train_` for dashboard heatmap | ✅ stable |
+| `core/optimizer.py` | Dynamic-α QUBO builder + D-Wave neal SA solver; returns `(Q_dict, alpha)` tuple | ✅ stable |
+| `core/staff_optimizer.py` | **Stage 2 QUBO** — staff × patient assignment; 4-term Hamiltonian (utility + uniqueness + capacity + qualification penalty); greedy fallback above 400 variables | ✅ stable |
+| `core/qaoa.py` | QAOA p=1 circuit: `qubo_to_ising`, `draw_qaoa_circuit` (base64 PNG), `circuit_info` | ✅ stable |
+| `core/baseline.py` | `random_forest_scores(X,y)` — RF urgency proba + macro F1 for benchmarking | ✅ stable |
+| `core/security.py` | **Real ML-KEM-768** via liboqs 0.15.0 — `MLKEMProxy` with `encrypt_patient_record`, `decrypt_patient_record`, `audit_hash`; KEM+DEM construction (ML-KEM-768 key exchange + AES-256-GCM symmetric). **14/14 smoke tests passing.** | ✅ upgraded |
+| `data/generator.py` | Synthetic patient vitals + staff roster with qualifications, fatigue, role weights | ✅ stable |
+| `pipeline.py` | 8-stage orchestrator: Data → Encrypt → QSVM → QUBO Stage 1 → QUBO Stage 2 → QAOA → Baseline → Audit | ✅ stable |
+| `ui/hospital_dashboard.py` | Hospital Command Center (port 8050) — tabs, spinner, log panel, free-bed summary | ✅ updated |
+| `ui/quantum_dashboard.py` | Quantum Engine Visualizer (port 8051) — 5 algorithm tabs, fixed slider marks | ✅ updated |
 
-**`pipeline.py` extended return dict** now includes:  
-`alpha`, `kernel_matrix`, `qubo_dict`, `qaoa_circuit_b64`, `qaoa_info`,  
-`rf_urgency`, `rf_f1`, `qsvm_f1`, `security`, `encrypted_sample`, `audit_hash`
+**`pipeline.py` full return dict:**
+```
+df, quantum_allocation, classical_allocation,
+urgency_scores, quantum_utilization, classical_utilization,
+unallocated_quantum, unallocated_classical,
+kernel_matrix, qubo_dict, alpha,
+qaoa_circuit_b64, qaoa_info,
+rf_urgency, rf_f1, qsvm_f1,
+security, encrypted_sample, audit_hash,
+staff_df, staff_allocation, staff_metrics, staff_qubo_dict, alpha_s,
+stage1_solve_ms, stage2_solve_ms
+```
 
 ---
 
-*Blueprint v2.0 — updated May 2026 with engineering fixes and dual Dash dashboards*
+## 13. Post-Blueprint Engineering Changelog
+
+### Security Upgrade — Mock → Real ML-KEM-768
+- **Before:** PyNaCl Curve25519-XSalsa20 mock labelled as ML-KEM proxy
+- **After:** `liboqs.KeyEncapsulation("Kyber768")` — genuine CRYSTALS-Kyber KEM
+- KEM+DEM construction: ML-KEM-768 encapsulation → one-time shared secret → AES-256-GCM(key=secret[:32])
+- Forward secrecy: fresh KEM encapsulation per record
+- Verified: 14/14 smoke tests (keygen, encrypt, decrypt, audit hash, round-trip)
+
+### Stage 2 QUBO — Staff Deployment
+Added `core/staff_optimizer.py` with a 4-term Hamiltonian:
+```
+H = -∑_{n,p} skill_n · urgency_p · (1−fatigue_n) · w_role_n · s_{n,p}   ← utility
+  + α_s · ∑_p (∑_n s_{n,p} − 1)²                                         ← one staff per patient
+  + β_s · ∑_n (∑_p s_{n,p} − C_n)²                                        ← staff capacity
+  + γ   · ∑_{p,n} (1 − qual_{n,ward_p}) · s_{n,p}                         ← qualification gate
+```
+- γ = 50.0 (must dominate utility to block unqualified assignments)
+- Greedy fallback above 400 variables (≈ 20 staff × 20 patients)
+- Output: `staff_allocation`, `staff_metrics` (skill_acuity_match, avg_fatigue, coverage)
+
+### UI Overhaul — Hospital Dashboard (port 8050)
+- **Spinner:** Full-screen `dcc.Loading(fullscreen=True)` with animated ⚛️ custom spinner during pipeline runs
+- **Pipeline Log:** stdout captured via `io.StringIO` redirect → displayed in dark terminal-style panel
+- **Tabs:** Replaced long single-page scroll with 5 tabs — Beds / Patients / Staff / Security / Log
+- **Free beds:** Single summary tile ("N free beds") per ward instead of N individual blank cards
+- **Section headers:** Numbered 01–05 with plain-English subtitles for judge/demo clarity
+- **Column guide:** Inline legend above patient table explaining every abbreviation
+- **Empty state:** Clean pipeline overview card instead of "READY FOR ACTION!" alert
+
+### UI Fixes — Quantum Dashboard (port 8051)
+- **Broken slider marks** fixed: `{4:"4", 8:"8"...20:"MAX"}` on a 10–300 range → `{10,100,200,300}`
+- **"300" label clipping** fixed: `paddingRight: 20px` wrapper on slider div
+- **Empty state** replaced: "QUANTUM CORE IS IDLE" red alert → clean 5-tab overview card
+
+---
+
+*Blueprint v3.0 — updated May 2026: real ML-KEM-768, Stage 2 staff QUBO, full UI overhaul*

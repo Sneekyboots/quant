@@ -9,6 +9,7 @@ import numpy as np
 import pandas as pd
 from sklearn.ensemble import RandomForestClassifier
 from sklearn.metrics import f1_score as _f1
+from sklearn.model_selection import train_test_split
 from data.generator import RESOURCE_NAMES, RESOURCE_CAPACITY
 
 
@@ -61,17 +62,21 @@ def compute_utilization(allocation: list[dict]) -> dict:
 
 def random_forest_scores(X: np.ndarray, y: np.ndarray) -> tuple[np.ndarray, float]:
     """
-    Train a Random Forest classifier on (X, y) and return:
-      urgency_proba : RF predicted P(critical) for each patient
-      f1            : macro-F1 on training set
-
-    Note: train == test because n is tiny in this demo.
-    This is the classical ML baseline benchmarked against QSVM.
+    Train a Random Forest on all (X, y) for urgency probabilities.
+    F1 is measured on a stratified 25% held-out split so the score is
+    honest (not inflated by train-set self-prediction).
     Citation: Breiman, Machine Learning 45, 5-32 (2001)
     """
+    # ── Held-out F1 ──────────────────────────────────────────────────────
+    X_tr, X_te, y_tr, y_te = train_test_split(
+        X, y, test_size=0.25, stratify=y, random_state=42
+    )
+    rf_eval = RandomForestClassifier(n_estimators=100, random_state=42)
+    rf_eval.fit(X_tr, y_tr)
+    f1 = float(_f1(y_te, rf_eval.predict(X_te), average="macro", zero_division=0))
+
+    # ── Full-data urgency proba for bed allocation ────────────────────────
     rf = RandomForestClassifier(n_estimators=100, random_state=42)
     rf.fit(X, y)
     urgency_proba = rf.predict_proba(X)[:, 1]
-    preds         = rf.predict(X)
-    f1            = float(_f1(y, preds, average="macro", zero_division=0))
     return urgency_proba, f1

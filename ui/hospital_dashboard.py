@@ -287,8 +287,8 @@ def resource_column(title, icon, color, capacity, assigned, df):
     ], width=4)
 
 
-def staff_chip(staff_id, role_name, skill, fatigue):
-    """A compact staff card showing fatigue level via a colour-coded left border."""
+def staff_chip(staff_id, role_name, skill, fatigue, patient_ids=None):
+    """A compact staff card showing fatigue level and assigned patients."""
     if fatigue >= 0.7:
         fatigue_cls = "fatigue-high"
         fatigue_label = "TIRED"
@@ -299,6 +299,17 @@ def staff_chip(staff_id, role_name, skill, fatigue):
         fatigue_cls = "fatigue-low"
         fatigue_label = "FRESH"
 
+    patient_ids = patient_ids or []
+    pts_badges = [
+        html.Span(pid, style={
+            "fontSize": "0.6rem", "fontWeight": "700",
+            "background": "#f1f2f6", "borderRadius": "5px",
+            "padding": "1px 5px", "marginRight": "3px", "marginTop": "2px",
+            "fontFamily": "JetBrains Mono", "display": "inline-block",
+        })
+        for pid in patient_ids
+    ]
+
     return html.Div([
         html.Div([
             html.Span(staff_id, style={"fontWeight": "700", "fontFamily": "JetBrains Mono", "fontSize": "0.8rem"}),
@@ -306,10 +317,15 @@ def staff_chip(staff_id, role_name, skill, fatigue):
                 "fontSize": "0.6rem", "fontWeight": "700", "marginLeft": "6px",
                 "color": "#ff6b6b" if fatigue >= 0.7 else "#f1c40f" if fatigue >= 0.4 else "#1abc9c"
             }),
+            html.Span(f"{len(patient_ids)} pt{'s' if len(patient_ids) != 1 else ''}", style={
+                "fontSize": "0.6rem", "color": "#636e72", "marginLeft": "auto",
+                "fontWeight": "600",
+            }),
         ], className="d-flex align-items-center"),
         html.Small(role_name, style={"color": "#636e72", "display": "block", "fontWeight": "600"}),
         html.Small(f"Skill {skill:.2f} · Fatigue {fatigue:.2f}",
                    style={"color": "#b2bec3", "display": "block", "fontSize": "0.65rem"}),
+        html.Div(pts_badges, style={"marginTop": "4px", "display": "flex", "flexWrap": "wrap"}),
     ], className=f"staff-chip {fatigue_cls}")
 
 
@@ -356,22 +372,41 @@ def waitlist_card(patient_id, urgency, reason, position):
 
 
 def staff_ward_column(title, icon, ward_name, ward_assignments, df_staff):
-    """One column in the staff grid — all staff assigned to a particular ward."""
+    """One column in the staff grid — unique staff grouped with their patient list."""
     chips = []
     if not ward_assignments:
         chips.append(html.Div("No staff assigned",
                               style={"color": "#b2bec3", "fontSize": "0.8rem", "fontWeight": "600",
                                      "padding": "20px", "textAlign": "center"}))
     else:
+        # Group assignments by staff member so each person appears once
+        seen = {}  # staff_id → dict with aggregated patient list
         for a in ward_assignments:
-            chips.append(staff_chip(a["staff_id"], a["role_name"], a["skill_level"], a["fatigue_score"]))
+            sid = a["staff_id"]
+            if sid not in seen:
+                seen[sid] = {**a, "patient_ids": []}
+            seen[sid]["patient_ids"].append(a["patient_id"])
+
+        for entry in seen.values():
+            chips.append(staff_chip(
+                entry["staff_id"], entry["role_name"],
+                entry["skill_level"], entry["fatigue_score"],
+                entry["patient_ids"],
+            ))
+
+    n_staff_shown = len(seen) if ward_assignments else 0
+    n_pts_covered = len(ward_assignments)
 
     return dbc.Col([
         html.Div([
             html.Span(icon, style={"fontSize": "1.2rem", "marginRight": "8px"}),
             html.Span(title, style={"fontWeight": "700", "color": "white", "fontSize": "0.95rem"}),
-            dbc.Badge(f"{len(ward_assignments)} assigned", color="light", text_color="dark",
-                      style={"borderRadius": "8px", "fontWeight": "700", "marginLeft": "auto"}),
+            html.Div([
+                dbc.Badge(f"{n_staff_shown} staff", color="light", text_color="dark",
+                          style={"borderRadius": "8px", "fontWeight": "700", "marginRight": "4px"}),
+                dbc.Badge(f"{n_pts_covered} pts", color="info",
+                          style={"borderRadius": "8px", "fontWeight": "700"}),
+            ], style={"marginLeft": "auto", "display": "flex"}),
         ], style={
             "background": "#2d3436", "border": "3px solid #2d3436",
             "borderRadius": "14px 14px 0 0", "padding": "12px 18px",
@@ -551,7 +586,7 @@ app = dash.Dash(
         dbc.themes.BOOTSTRAP,
         "https://fonts.googleapis.com/css2?family=Fredoka:wght@400;600;700&display=swap"
     ],
-    title="🏥 Fun Q-Hospital",
+    title="🏥  Q-Hospital",
 )
 app.index_string = app.index_string.replace(
     "</head>",
@@ -587,7 +622,7 @@ app.layout = html.Div([
             dbc.Row([
                 dbc.Col([
                     html.Div([
-                        html.H3("🏥  Fun Q-Hospital",
+                        html.H3("🏥  Q-Hospital",
                                 style={"margin": 0, "color": "#2d3436",
                                        "fontWeight": "700"}),
                         html.Small("Quantum-Powered Bed Allocation",
@@ -722,6 +757,8 @@ app.layout = html.Div([
                             "Column guide \u2014  "
                             "BP \u0394: blood-pressure deviation  \u00b7  "
                             "O\u2082 SAT: oxygen saturation  \u00b7  "
+                            "TEMP \u0394: fever / hypothermia delta (>0.60 = flagged)  \u00b7  "
+                            "AQI: local PM2.5 reading (>0.50 = surge)  \u00b7  "
                             "HR DEV: heart-rate deviation  \u00b7  "
                             "RESP: respiratory rate  \u00b7  "
                             "GCS \u25bc: Glasgow Coma Score deficit (higher = worse)  \u00b7  "
@@ -957,6 +994,10 @@ def update_ui(data):
             html.Td(row["patient_id"],          style={"fontWeight": "700", "fontFamily": "JetBrains Mono"}),
             html.Td(f"{row['bp_deviation']:.2f}"),
             html.Td(f"{1.0-row['spo2_deficit']:.2f}"),
+            html.Td(f"{row.get('temperature_delta', 0):.2f}",
+                    style={"color": "#ff6b6b" if row.get('temperature_delta', 0) > 0.60 else "#2d3436"}),
+            html.Td(f"{row.get('aqi_pm25', 0):.2f}",
+                    style={"color": "#f39c12" if row.get('aqi_pm25', 0) > 0.50 else "#2d3436"}),
             html.Td(f"{row.get('hr_deviation', 0):.2f}"),
             html.Td(f"{row.get('resp_rate', 0):.2f}"),
             html.Td(f"{row.get('gcs_deficit', 0):.2f}",
@@ -973,6 +1014,7 @@ def update_ui(data):
     table = dbc.Table(
         [html.Thead(html.Tr([
             html.Th("PATIENT"), html.Th("BP Δ"), html.Th("O₂ SAT"),
+            html.Th("TEMP Δ"), html.Th("AQI"),
             html.Th("HR DEV"), html.Th("RESP"), html.Th("GCS ▼"), html.Th("LACTATE"),
             html.Th("SCORE"), html.Th("STATUS"),
             html.Th("ASSIGNED TO"),

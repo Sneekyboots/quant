@@ -19,6 +19,8 @@ Layers
 import argparse
 import numpy as np
 from sklearn.metrics import f1_score as _f1
+from sklearn.model_selection import train_test_split
+from sklearn.svm import SVC as _SVC
 
 import time
 
@@ -96,13 +98,19 @@ def run_pipeline(aqi_level: float = 50.0, n_patients: int = 100, verbose: bool =
 
     df["urgency_score"] = np.round(urgency_scores, 4)
 
-    # QSVM F1: threshold urgency at 0.5
-    qsvm_preds = (urgency_scores > 0.5).astype(int)
-    qsvm_f1    = float(_f1(y, qsvm_preds, average="macro", zero_division=0))
+    # QSVM F1: 25 % held-out split reusing the stored kernel matrix (no extra
+    # circuit calls).  K[tr][:,tr] trains; K[te][:,tr] evaluates.
+    K = qsvm.K_train_
+    all_idx = np.arange(len(y))
+    _tr, _te = train_test_split(all_idx, test_size=0.25, stratify=y, random_state=42)
+    _svc_eval = _SVC(kernel="precomputed", probability=True, random_state=42)
+    _svc_eval.fit(K[np.ix_(_tr, _tr)], y[_tr])
+    _te_preds = _svc_eval.predict(K[np.ix_(_te, _tr)])
+    qsvm_f1   = float(_f1(y[_te], _te_preds, average="macro", zero_division=0))
 
     if verbose:
         print(f"    Urgency scores : {np.round(urgency_scores, 4)}")
-        print(f"    QSVM F1 (train): {qsvm_f1:.3f}")
+        print(f"    QSVM F1 (25% holdout): {qsvm_f1:.3f}")
 
     # ── 3. Build QUBO from urgency scores ────────────────────────────────
     if verbose:

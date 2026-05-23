@@ -723,52 +723,78 @@ def render_staff_tab(data):
         return dbc.Alert("Run the pipeline to generate Stage 2 staff data.", color="warning")
 
     # ── Staff QUBO heatmap ────────────────────────────────────────────────
-    raw_s = data.get("staff_qubo_dict", {})
-    M_s   = np.zeros((n_vars_s, n_vars_s))
-    for key_str, val in raw_s.items():
-        key_str = key_str.strip("()")
-        parts   = [p.strip().strip("'\"") for p in key_str.split(",")]
-        if len(parts) == 2:
-            def _vidx(v):
-                parts_v = v.split("_p")
-                return int(parts_v[0][1:]) * n_patients + int(parts_v[1])
-            try:
-                i, j = _vidx(parts[0]), _vidx(parts[1])
-                if 0 <= i < n_vars_s and 0 <= j < n_vars_s:
-                    M_s[i, j] += val
-                    if i != j:
-                        M_s[j, i] += val
-            except (IndexError, ValueError):
-                pass
+    raw_s      = data.get("staff_qubo_dict", {})
+    is_greedy  = bool(raw_s.get("__greedy__", False))
+    QUBO_LIMIT = 400   # mirrors STAFF_QUBO_VAR_LIMIT in staff_optimizer.py
+    max_pts_for_qubo = QUBO_LIMIT // max(n_staff, 1)
 
-    # Only show first 48 variables for legibility
-    DISPLAY = min(n_vars_s, 48)
-    M_disp   = M_s[:DISPLAY, :DISPLAY]
-    role_labels = staff_df["role_name"].tolist()
-    xlabels = [
-        f"{role_labels[n_idx][:3]}-P{p_idx+1}"
-        for n_idx in range(min(n_staff, DISPLAY // n_patients + 1))
-        for p_idx in range(n_patients)
-    ][:DISPLAY]
+    if is_greedy:
+        fig_sq = go.Figure()
+        fig_sq.add_annotation(
+            text=(
+                f"<b>Greedy fallback — QUBO matrix unavailable</b><br>"
+                f"{n_vars_s:,} decision variables ({n_staff} staff × {n_patients} patients)<br>"
+                f"exceeds the {QUBO_LIMIT}-variable QUBO limit.<br><br>"
+                f"<span style='color:#636e72'>Use ≤ {max_pts_for_qubo} patients to see the full matrix.</span>"
+            ),
+            xref="paper", yref="paper", x=0.5, y=0.5,
+            showarrow=False, align="center",
+            font=dict(size=14, color=DARK, family="Fredoka"),
+        )
+        fig_sq.update_layout(
+            paper_bgcolor="white", plot_bgcolor="#f8f9fa",
+            xaxis=dict(visible=False), yaxis=dict(visible=False),
+            title=dict(
+                text=f"STAGE 2 STAFF QUBO  ({n_vars_s} VARS > {QUBO_LIMIT} LIMIT — GREEDY USED)",
+                font=dict(color=RED, size=13, family="Fredoka"),
+            ),
+            height=300,
+        )
+    else:
+        M_s = np.zeros((n_vars_s, n_vars_s))
+        for key_str, val in raw_s.items():
+            key_str = key_str.strip("()")
+            parts   = [p.strip().strip("'\"") for p in key_str.split(",")]
+            if len(parts) == 2:
+                def _vidx(v):
+                    parts_v = v.split("_p")
+                    return int(parts_v[0][1:]) * n_patients + int(parts_v[1])
+                try:
+                    i, j = _vidx(parts[0]), _vidx(parts[1])
+                    if 0 <= i < n_vars_s and 0 <= j < n_vars_s:
+                        M_s[i, j] += val
+                        if i != j:
+                            M_s[j, i] += val
+                except (IndexError, ValueError):
+                    pass
 
-    fig_sq = go.Figure(go.Heatmap(
-        z=M_disp, x=xlabels, y=xlabels,
-        colorscale="RdBu", zmid=0,
-        showscale=True,
-        colorbar=dict(
-            tickfont=dict(color=DARK, family="Fredoka"),
-            title=dict(text="Q_s[i,j]", font=dict(color=DARK, family="Fredoka")),
-        ),
-    ))
-    fig_sq.update_layout(
-        title=dict(text=f"STAGE 2 STAFF QUBO  ({n_vars_s} VARS \u2014 SHOWING FIRST {DISPLAY})",
-                   font=dict(color=DARK, size=13, family="Fredoka")),
-        paper_bgcolor="white", plot_bgcolor="white",
-        xaxis=dict(color=DARK, tickangle=45, tickfont=dict(size=7)),
-        yaxis=dict(color=DARK, autorange="reversed", tickfont=dict(size=7)),
-        margin=dict(l=80, r=20, t=60, b=100),
-        height=480,
-    )
+        DISPLAY  = min(n_vars_s, 48)
+        M_disp   = M_s[:DISPLAY, :DISPLAY]
+        role_labels = staff_df["role_name"].tolist()
+        xlabels = [
+            f"{role_labels[n_idx][:3]}-P{p_idx+1}"
+            for n_idx in range(min(n_staff, DISPLAY // n_patients + 1))
+            for p_idx in range(n_patients)
+        ][:DISPLAY]
+
+        fig_sq = go.Figure(go.Heatmap(
+            z=M_disp, x=xlabels, y=xlabels,
+            colorscale="RdBu", zmid=0,
+            showscale=True,
+            colorbar=dict(
+                tickfont=dict(color=DARK, family="Fredoka"),
+                title=dict(text="Q_s[i,j]", font=dict(color=DARK, family="Fredoka")),
+            ),
+        ))
+        fig_sq.update_layout(
+            title=dict(text=f"STAGE 2 STAFF QUBO  ({n_vars_s} VARS \u2014 SHOWING FIRST {DISPLAY})",
+                       font=dict(color=DARK, size=13, family="Fredoka")),
+            paper_bgcolor="white", plot_bgcolor="white",
+            xaxis=dict(color=DARK, tickangle=45, tickfont=dict(size=7)),
+            yaxis=dict(color=DARK, autorange="reversed", tickfont=dict(size=7)),
+            margin=dict(l=80, r=20, t=60, b=100),
+            height=480,
+        )
 
     # ── Staff utilisation bar chart ───────────────────────────────────────
     util_pct = sm.get("utilization_pct", {})
