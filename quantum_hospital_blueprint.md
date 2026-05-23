@@ -62,7 +62,7 @@
 For patient feature vectors **x_i, x_j ∈ ℝ⁴**:
 
 ```
-K(x_i, x_j) = |⟨Φ(x_i)|Φ(x_j)⟩|²
+K(x_i, x_j) = |⟨Φ(x_i)|Φ(x_j)⟩|² 
 ```
 
 - Angle embedding: each feature mapped via RY rotations
